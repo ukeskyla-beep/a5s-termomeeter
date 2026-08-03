@@ -41,10 +41,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.exp
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -67,6 +71,9 @@ class ThermometerService : android.app.Service() {
         const val ACTION_SCAN_BASES = "ee.ukesk.a5s.SCAN_BASES"
         const val ACTION_STOP_SCAN = "ee.ukesk.a5s.STOP_SCAN"
         const val ACTION_REFRESH_DEVICES = "ee.ukesk.a5s.REFRESH_DEVICES"
+        const val ACTION_START_DEMO = "ee.ukesk.a5s.START_DEMO"
+        const val ACTION_STOP_DEMO = "ee.ukesk.a5s.STOP_DEMO"
+        const val ACTION_DEMO_BOOST = "ee.ukesk.a5s.DEMO_BOOST"
 
         private const val CHANNEL_ONGOING = "a5s_ongoing"
         private const val CHANNEL_ALARM = "a5s_alarm_v2"
@@ -85,6 +92,11 @@ class ThermometerService : android.app.Service() {
         private const val STALE_DATA_TIMEOUT_MS = 20_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
 
+        /** Demo simulatsiooni parameetrid: ~57 °C kahe minutiga. */
+        private const val AMBIENT_C = 20.0
+        private const val OVEN_C = 95.0
+        private const val DEMO_TAU_S = 180.0
+
         fun start(context: Context) = send(context, ACTION_START)
         fun stop(context: Context) = send(context, ACTION_STOP)
         fun silenceAlarm(context: Context) = send(context, ACTION_SILENCE_ALARM)
@@ -92,6 +104,9 @@ class ThermometerService : android.app.Service() {
         fun scanForBases(context: Context) = send(context, ACTION_SCAN_BASES)
         fun stopScan(context: Context) = send(context, ACTION_STOP_SCAN)
         fun refreshDevices(context: Context) = send(context, ACTION_REFRESH_DEVICES)
+        fun startDemo(context: Context) = send(context, ACTION_START_DEMO)
+        fun stopDemo(context: Context) = send(context, ACTION_STOP_DEMO)
+        fun demoBoost(context: Context) = send(context, ACTION_DEMO_BOOST)
 
         /**
          * Teadlikult startService, mitte startForegroundService. Viimane annab
@@ -230,6 +245,9 @@ class ThermometerService : android.app.Service() {
             }
             ACTION_SCAN_BASES -> startBaseScan()
             ACTION_STOP_SCAN -> stopBaseScan()
+            ACTION_START_DEMO -> startDemo()
+            ACTION_STOP_DEMO -> stopDemo()
+            ACTION_DEMO_BOOST -> demoBoostCelsius += 10.0
             else -> reloadBasesAndConnect()
         }
         return START_STICKY
@@ -412,6 +430,57 @@ class ThermometerService : android.app.Service() {
         if (gatt != null) gatts[address] = gatt
     }
 
+    // ------------------------------------------------------------------- demo
+
+    private var demoJob: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var demoBoostCelsius = 0.0
+
+    /**
+     * Demo asendab ainult andmeallika. Kõik ülejäänu — alarm, salvestamine,
+     * teavitus — käib täpselt sama koodi kaudu mis päris anduri puhul, muidu
+     * ei testiks demo midagi.
+     */
+    private fun startDemo() {
+        if (demoJob != null) return
+
+        teardownBle()
+        demoBoostCelsius = 0.0
+        ThermometerRepository.setDemoMode(true)
+        ThermometerRepository.setConnection(ConnectionState.CONNECTED)
+
+        val startedAt = System.currentTimeMillis()
+        demoJob = serviceScope.launch {
+            while (isActive) {
+                val seconds = (System.currentTimeMillis() - startedAt) / 1000.0
+                // Newtoni jahtumisseadus tagurpidi: kiire tõus alguses, siis
+                // aeglustub — nagu päris lihal ahjus.
+                val natural = OVEN_C - (OVEN_C - AMBIENT_C) * exp(-seconds / DEMO_TAU_S)
+                val celsius = min(150.0, natural + demoBoostCelsius)
+                // Päris andur annab täiskraade, demo teeb sama.
+                processReading(
+                    A5sProtocol.Reading(
+                        address = DEMO_PROBE_ADDRESS,
+                        celsius = celsius.roundToInt().toDouble(),
+                        batteryRaw = 85,
+                    ),
+                )
+                delay(1000)
+            }
+        }
+        handler.removeCallbacks(staleDataWatchdog)
+        handler.postDelayed(staleDataWatchdog, WATCHDOG_INTERVAL_MS)
+    }
+
+    private fun stopDemo() {
+        demoJob?.cancel()
+        demoJob = null
+        CookRecorder.endSession(DEMO_PROBE_ADDRESS)
+        ThermometerRepository.setDemoMode(false)
+        reloadBasesAndConnect()
+    }
+
     /** Kõik ühendused kinni ja uuesti lahti — kasutab valvekoer. */
     @SuppressLint("MissingPermission")
     private fun reconnectAll() {
@@ -553,7 +622,12 @@ class ThermometerService : android.app.Service() {
 
         val reading = A5sProtocol.parse(value) ?: return
         registerProbeIfNew(reading.address, baseAddress)
+        processReading(reading)
+    }
 
+    /** Ühine töötlus päris ja demo mõõtmistele. */
+    private fun processReading(reading: A5sProtocol.Reading) {
+        lastFrameAt = System.currentTimeMillis()
         ThermometerRepository.publishReading(reading)
         CookRecorder.record(reading.address, reading.celsius)
         checkAlarm(reading.address, reading.celsius)

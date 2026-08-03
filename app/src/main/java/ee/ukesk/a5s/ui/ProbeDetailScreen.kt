@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ee.ukesk.a5s.ble.ThermometerRepository
+import ee.ukesk.a5s.ble.ThermometerService
 import ee.ukesk.a5s.data.MeatTargets
 import ee.ukesk.a5s.data.Settings
 import ee.ukesk.a5s.data.db.AppDatabase
@@ -106,6 +107,28 @@ fun ProbeDetailScreen(
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.clickable { renameOpen = true },
             )
+
+            if (state.alarmSounding) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                    ),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Alarm heliseb",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = { ThermometerService.silenceAlarm(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Peata alarm") }
+                    }
+                }
+            }
 
             // ----------------------------------------------------- praegune näit
             Card(

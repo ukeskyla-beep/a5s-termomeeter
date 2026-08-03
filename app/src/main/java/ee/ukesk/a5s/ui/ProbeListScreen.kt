@@ -12,10 +12,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ee.ukesk.a5s.ble.ConnectionState
 import ee.ukesk.a5s.ble.ThermometerRepository
+import ee.ukesk.a5s.ble.ThermometerService
 import ee.ukesk.a5s.data.MeatTargets
 import ee.ukesk.a5s.data.Settings
 import ee.ukesk.a5s.data.db.AppDatabase
@@ -50,6 +53,16 @@ fun ProbeListScreen(
     val state by ThermometerRepository.state.collectAsStateWithLifecycle()
     val unit by Settings.unit.collectAsStateWithLifecycle()
     val knownProbes by dao.observeProbes().collectAsStateWithLifecycle(initialValue = emptyList())
+
+    // Registris olevad sondid pluss need, kes hetkel andmeid saadavad, aga
+    // registrisse veel ei kuulu — demo sond ja äsja avastatud sond.
+    val rows = remember(knownProbes, state.probes) {
+        val known = knownProbes.map { it.address to it.name }
+        val extra = state.probeList
+            .filterNot { probe -> knownProbes.any { it.address == probe.address } }
+            .map { it.address to it.displayName }
+        known + extra
+    }
 
     Scaffold(
         topBar = {
@@ -90,7 +103,63 @@ fun ProbeListScreen(
                 )
             }
 
-            if (knownProbes.isEmpty()) {
+            // Alarmi peab saama peatada ka äpist, mitte ainult teavitusest.
+            // Vana ühe-ekraani versioonis oli see olemas; UI ümberkirjutusel
+            // jäi taastamata ja "Testi alarmi" puhul ei olnud ühtegi väljapääsu.
+            if (state.alarmSounding) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                    ),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Alarm heliseb",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = { ThermometerService.silenceAlarm(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Peata alarm") }
+                    }
+                }
+            }
+
+            if (state.demoMode) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    ),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Demo režiim",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Text(
+                            text = "Andmed tulevad simulaatorist, mitte päris termomeetrilt.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { ThermometerService.demoBoost(context) },
+                            ) { Text("+10 °C") }
+                            OutlinedButton(
+                                onClick = { ThermometerService.stopDemo(context) },
+                            ) { Text("Lõpeta demo") }
+                        }
+                    }
+                }
+            }
+
+            if (rows.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = "Ühtegi sondi pole veel nähtud.\n" +
@@ -101,10 +170,10 @@ fun ProbeListScreen(
                 }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(knownProbes, key = { it.address }) { known ->
-                        val live = state.probes[known.address]
+                    items(rows, key = { it.first }) { (address, name) ->
+                        val live = state.probes[address]
                         ProbeRow(
-                            name = known.name,
+                            name = name,
                             temperatureText = live?.let {
                                 "${(unit.from(it.celsius) * 10).roundToInt() / 10.0}"
                             },
@@ -115,7 +184,7 @@ fun ProbeListScreen(
                                     "${target.doneness}"
                             },
                             reachedTarget = live?.alarmFired == true,
-                            onClick = { onOpenProbe(known.address) },
+                            onClick = { onOpenProbe(address) },
                         )
                     }
                     item { Spacer(Modifier.height(24.dp)) }

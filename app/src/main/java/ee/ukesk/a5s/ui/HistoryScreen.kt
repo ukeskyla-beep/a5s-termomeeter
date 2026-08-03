@@ -105,11 +105,20 @@ private fun SessionCard(
             .clickable(onClick = onClick),
     ) {
         Column(Modifier.padding(16.dp)) {
+            val isDemo = session.probeAddress
+                ?.startsWith(ee.ukesk.a5s.ble.DEMO_ADDRESS_PREFIX) == true
+
             Text(
-                text = session.meat
-                    ?.let { "${MeatTargets.emojiFor(it)}  $it" }
-                    ?: "Nimetu küpsetus",
+                text = (if (isDemo) "DEMO · " else "") +
+                    (session.meat
+                        ?.let { "${MeatTargets.emojiFor(it)}  $it" }
+                        ?: "Nimetu küpsetus"),
                 style = MaterialTheme.typography.titleMedium,
+                color = if (isDemo) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
             )
             session.doneness?.let {
                 Text(

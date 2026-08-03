@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,6 +63,16 @@ fun PairingScreen(
     val knownAddresses = knownBases.map { it.address }.toSet()
 
     var naming by remember { mutableStateOf<DiscoveredBase?>(null) }
+
+    val candidatesEmpty = state.discoveredBases.none { it.address !in knownAddresses }
+
+    // Anname otsingule aega, enne kui väljapääsu pakume — muidu vilguks
+    // "ei leidnud" kohe, kui leht avaneb.
+    var searchedLongEnough by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(12_000)
+        searchedLongEnough = true
+    }
 
     // Otsime pidevalt, kuni sellel lehel ollakse. See katab ühtlasi juhtumi, kus
     // Bluetoothi luba anti alles pärast lehe avanemist või kus 30-sekundiline
@@ -116,31 +127,55 @@ fun PairingScreen(
                         strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.padding(horizontal = 6.dp))
-                    Text(
-                        text = "Otsin…",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    OutlinedButton(onClick = { ThermometerService.scanForBases(context) }) {
-                        Text("Otsi uuesti")
-                    }
                 }
+                Text(
+                    text = if (state.scanningForBases) "Otsin…" else "Otsing peatatud",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // Väljapääs. Varem olid need nupud skaneerimise tingimuse taga ja
+            // kuna otsing kordub automaatselt, ei ilmunud need mitte kunagi —
+            // ekraan jäi igavesse "Otsin…" tsüklisse.
+            if (searchedLongEnough && candidatesEmpty) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = "Baasi ei leitud. Kontrolli, kas see on sisse lülitatud ja " +
+                        "telefoni lähedal.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = { ThermometerService.scanForBases(context) }) {
+                        Text("Proovi uuesti")
+                    }
+                    Button(onClick = {
+                        ThermometerService.startDemo(context)
+                        onDone()
+                    }) { Text("Demo") }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Demo näitab äpi tööd virtuaalse sondiga, ilma päris " +
+                        "termomeetrita.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(Modifier.height(16.dp))
 
             val candidates = state.discoveredBases.filterNot { it.address in knownAddresses }
             if (candidates.isEmpty()) {
-                Text(
-                    text = if (state.scanningForBases) {
-                        "Ühtegi uut baasi pole veel leitud."
-                    } else {
-                        "Baasi ei leitud. Kontrolli, kas see on sisse lülitatud."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (!searchedLongEnough) {
+                    Text(
+                        text = "Ühtegi uut baasi pole veel leitud.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(candidates, key = { it.address }) { base ->

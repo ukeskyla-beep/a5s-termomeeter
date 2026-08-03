@@ -55,6 +55,7 @@ fun AppRoot(
 
     val bases by dao.observeBases().collectAsStateWithLifecycle(initialValue = null)
     val unit by Settings.unit.collectAsStateWithLifecycle()
+    val state by ee.ukesk.a5s.ble.ThermometerRepository.state.collectAsStateWithLifecycle()
 
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -66,7 +67,8 @@ fun AppRoot(
     val knownBases = bases
     if (knownBases == null) return // andmebaas veel laeb
 
-    if (knownBases.isEmpty()) {
+    // Demo asendab baasi, seega paaritamise lehte enam näidata ei tohi.
+    if (knownBases.isEmpty() && !state.demoMode) {
         PairingScreen(
             isFirstRun = true,
             onDone = { screen = Screen.Home },
@@ -146,6 +148,28 @@ fun AppRoot(
                         selected = false,
                         onClick = {
                             screen = Screen.AddDevice
+                            scope.launch { drawerState.close() }
+                        },
+                    )
+                    NavigationDrawerItem(
+                        label = {
+                            Column {
+                                Text(if (state.demoMode) "Lõpeta demo" else "Demo režiim")
+                                Text(
+                                    text = "Virtuaalne sond, ilma päris termomeetrita",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        selected = state.demoMode,
+                        onClick = {
+                            if (state.demoMode) {
+                                ThermometerService.stopDemo(context)
+                            } else {
+                                ThermometerService.startDemo(context)
+                                screen = Screen.Home
+                            }
                             scope.launch { drawerState.close() }
                         },
                     )

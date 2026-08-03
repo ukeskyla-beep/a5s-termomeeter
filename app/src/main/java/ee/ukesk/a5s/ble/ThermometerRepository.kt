@@ -34,9 +34,23 @@ data class ProbeState(
     val preWarnFired: Boolean = false,
     val alarmFired: Boolean = false,
 ) {
-    val displayName: String get() = name ?: "Sond ${address.takeLast(5)}"
+    val isDemo: Boolean get() = address.startsWith(DEMO_ADDRESS_PREFIX)
+
+    val displayName: String get() = when {
+        name != null -> name
+        isDemo -> "Demo sond"
+        else -> "Sond ${address.takeLast(5)}"
+    }
+
     val isCooking: Boolean get() = target != null
 }
+
+/**
+ * Demo sondi aadress. Prefiksi järgi tunneme demo ära kõikjal — nii ei ole vaja
+ * ei eraldi andmebaasi veergu ega registrikirjet, mis pärast demot alles jääks.
+ */
+const val DEMO_ADDRESS_PREFIX = "DEMO:"
+const val DEMO_PROBE_ADDRESS = "DEMO:00:00:00:01"
 
 /** Skaneerimisel leitud baas, mida pole veel lisatud. */
 data class DiscoveredBase(
@@ -54,6 +68,8 @@ data class ThermometerState(
     val scanningForBases: Boolean = false,
     val discoveredBases: List<DiscoveredBase> = emptyList(),
     val connectedBases: Set<String> = emptySet(),
+    /** Demo režiim: andmed tulevad simulaatorist, mitte päris baasist. */
+    val demoMode: Boolean = false,
     val lastError: String? = null,
 ) {
     val probeList: List<ProbeState> get() = probes.values.toList()
@@ -184,6 +200,23 @@ object ThermometerRepository {
             } else {
                 state.copy(discoveredBases = state.discoveredBases + base)
             }
+        }
+    }
+
+    fun setDemoMode(enabled: Boolean) {
+        _state.update { state ->
+            state.copy(
+                demoMode = enabled,
+                // Demo ajal on Bluetooth maha võetud, seega päris sondide
+                // näidud on vananenud — need tuleb ära koristada, et nad ei
+                // jätaks muljet töötavast ühendusest. Demo lõppedes kaob
+                // virtuaalne sond samal põhjusel.
+                probes = state.probes.filterKeys { address ->
+                    val isDemoProbe = address.startsWith(DEMO_ADDRESS_PREFIX)
+                    if (enabled) isDemoProbe else !isDemoProbe
+                },
+                lastError = null,
+            )
         }
     }
 
