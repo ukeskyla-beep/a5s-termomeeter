@@ -13,6 +13,13 @@ enum class ConnectionState {
     CONNECTED,
     RECONNECTING,
     BLUETOOTH_OFF,
+
+    /**
+     * Taasühendamine anti alla. Lõputu proovimine tühjendaks aku ja jätaks äpi
+     * igavesse "ühendan…" olekusse, seega proovime piiratud aja ja pakume siis
+     * nuppu. Küpsetuse ajal siia olekusse ei jõuta — vt CONNECT_GIVE_UP_MS.
+     */
+    GAVE_UP,
 }
 
 /**
@@ -43,7 +50,27 @@ data class ProbeState(
     }
 
     val isCooking: Boolean get() = target != null
+
+    /**
+     * Kas näitu ei tohi enam usaldada. Demo sond seisab meelega paigal, tema
+     * kohta see ei kehti.
+     */
+    fun isReadingStale(now: Long): Boolean {
+        if (isDemo) return false
+        val limit = if (isCooking) COOKING_STALE_MS else IDLE_STALE_MS
+        return now - lastUpdateAt > limit
+    }
 }
+
+/**
+ * Küpsetuse ajal saadab sond tihedalt ja vaikus on kohe kahtlane.
+ *
+ * Jõude olles tuleb mõõtmine ebaühtlaselt — mõnikord nelja, mõnikord
+ * kolmekümne sekundi tagant. Lühem piir vilguks siin lakkamatult ette ja
+ * tagasi, seega on jõudeoleku piir tunduvalt lahkem.
+ */
+const val COOKING_STALE_MS = 30_000L
+const val IDLE_STALE_MS = 120_000L
 
 /**
  * Demo sondi aadress. Prefiksi järgi tunneme demo ära kõikjal — nii ei ole vaja
@@ -51,6 +78,21 @@ data class ProbeState(
  */
 const val DEMO_ADDRESS_PREFIX = "DEMO:"
 const val DEMO_PROBE_ADDRESS = "DEMO:00:00:00:01"
+
+/** Toatemperatuur, mille peal demo sond seisab, kuni siht on valimata. */
+const val DEMO_AMBIENT_C = 20.0
+
+/**
+ * Demo sond on nimekirjas alati olemas — eraldi "demo režiimi" ei ole. Nii on
+ * see lihtsalt üks andur teiste seas ja kogu ülejäänud äpp ei pea teadma, et
+ * demo üldse eksisteerib.
+ */
+private fun demoProbe() = ProbeState(
+    address = DEMO_PROBE_ADDRESS,
+    celsius = DEMO_AMBIENT_C,
+    batteryPercent = 100,
+    lastUpdateAt = System.currentTimeMillis(),
+)
 
 /** Skaneerimisel leitud baas, mida pole veel lisatud. */
 data class DiscoveredBase(
@@ -68,8 +110,6 @@ data class ThermometerState(
     val scanningForBases: Boolean = false,
     val discoveredBases: List<DiscoveredBase> = emptyList(),
     val connectedBases: Set<String> = emptySet(),
-    /** Demo režiim: andmed tulevad simulaatorist, mitte päris baasist. */
-    val demoMode: Boolean = false,
     val lastError: String? = null,
 ) {
     val probeList: List<ProbeState> get() = probes.values.toList()
@@ -82,7 +122,9 @@ data class ThermometerState(
  */
 object ThermometerRepository {
 
-    private val _state = MutableStateFlow(ThermometerState())
+    private val _state = MutableStateFlow(
+        ThermometerState(probes = mapOf(DEMO_PROBE_ADDRESS to demoProbe())),
+    )
     val state: StateFlow<ThermometerState> = _state.asStateFlow()
 
     /**
@@ -203,21 +245,10 @@ object ThermometerRepository {
         }
     }
 
-    fun setDemoMode(enabled: Boolean) {
-        _state.update { state ->
-            state.copy(
-                demoMode = enabled,
-                // Demo ajal on Bluetooth maha võetud, seega päris sondide
-                // näidud on vananenud — need tuleb ära koristada, et nad ei
-                // jätaks muljet töötavast ühendusest. Demo lõppedes kaob
-                // virtuaalne sond samal põhjusel.
-                probes = state.probes.filterKeys { address ->
-                    val isDemoProbe = address.startsWith(DEMO_ADDRESS_PREFIX)
-                    if (enabled) isDemoProbe else !isDemoProbe
-                },
-                lastError = null,
-            )
-        }
+    /** Baas eemaldati — tema sondid ei tohi nimekirja vana näiduga seisma jääda. */
+    fun forgetProbes(addresses: Collection<String>) {
+        if (addresses.isEmpty()) return
+        _state.update { it.copy(probes = it.probes - addresses.toSet()) }
     }
 
     fun setBaseConnected(address: String, connected: Boolean) {
@@ -240,6 +271,6 @@ object ThermometerRepository {
     }
 
     fun reset() {
-        _state.value = ThermometerState()
+        _state.value = ThermometerState(probes = mapOf(DEMO_PROBE_ADDRESS to demoProbe()))
     }
 }

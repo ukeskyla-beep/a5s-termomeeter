@@ -71,8 +71,7 @@ class ThermometerService : android.app.Service() {
         const val ACTION_SCAN_BASES = "ee.ukesk.a5s.SCAN_BASES"
         const val ACTION_STOP_SCAN = "ee.ukesk.a5s.STOP_SCAN"
         const val ACTION_REFRESH_DEVICES = "ee.ukesk.a5s.REFRESH_DEVICES"
-        const val ACTION_START_DEMO = "ee.ukesk.a5s.START_DEMO"
-        const val ACTION_STOP_DEMO = "ee.ukesk.a5s.STOP_DEMO"
+        const val ACTION_RETRY_CONNECT = "ee.ukesk.a5s.RETRY_CONNECT"
         const val ACTION_DEMO_BOOST = "ee.ukesk.a5s.DEMO_BOOST"
 
         private const val CHANNEL_ONGOING = "a5s_ongoing"
@@ -85,15 +84,41 @@ class ThermometerService : android.app.Service() {
         private const val NOTIFICATION_THROTTLE_MS = 1_000L
 
         /**
-         * Mõõtmisi tuleb ~165 ms tagant. Kui neid pole nii kaua tulnud, on
-         * andmevoog surnud, isegi kui Bluetooth väidab, et ühendus on olemas —
-         * ja siis ei tuleks ka alarmi.
+         * Küpsetuse ajal tuleb mõõtmisi ~165 ms tagant, aga jõude olles saadab
+         * sond harva ja ebaühtlaselt — kuni poole minuti pikkused vahed on
+         * normaalsed. Piir peab jääma neist selgelt kõrgemale, muidu hakkaks
+         * valvekoer tervet ühendust põhjuseta remontima.
          */
-        private const val STALE_DATA_TIMEOUT_MS = 20_000L
+        private const val STALE_DATA_TIMEOUT_MS = 45_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
 
+        /** Kui kaua ootame lingi elumärgi (RSSI) vastust, enne kui katkiseks loeme. */
+        private const val LIVENESS_REPLY_TIMEOUT_MS = 5_000L
+
+        /** Nii värske elumärk kehtib; vanem tuleb uuesti küsida. */
+        private const val LIVENESS_INTERVAL_MS = 20_000L
+
+        /**
+         * Kui kaua lugeda ühendumiskatset pooleliolevaks. Androidi enda
+         * ajapiir on ~30 s, seega natuke rohkem.
+         */
+        private const val CONNECT_ATTEMPT_TIMEOUT_MS = 40_000L
+
+        /**
+         * Küpsetuse ajal peab mõõtmisi tulema. Kui neid nii kaua ei ole, on
+         * midagi valesti ka siis, kui link ise elumärki annab — siis on parem
+         * ühendus katki teha ja uuesti üles ehitada.
+         */
+        private const val COOKING_SILENCE_TIMEOUT_MS = 90_000L
+
+        /**
+         * Kui kaua tulutult proovida, enne kui alla anda ja nuppu pakkuda.
+         * Kehtib ainult jõudeoleku kohta: käimasoleva küpsetuse ajal proovime
+         * lõputult, sest siis on alarm ainus asi, mis liha põlemast päästab.
+         */
+        private const val CONNECT_GIVE_UP_MS = 120_000L
+
         /** Demo simulatsiooni parameetrid: ~57 °C kahe minutiga. */
-        private const val AMBIENT_C = 20.0
         private const val OVEN_C = 95.0
         private const val DEMO_TAU_S = 180.0
 
@@ -104,8 +129,7 @@ class ThermometerService : android.app.Service() {
         fun scanForBases(context: Context) = send(context, ACTION_SCAN_BASES)
         fun stopScan(context: Context) = send(context, ACTION_STOP_SCAN)
         fun refreshDevices(context: Context) = send(context, ACTION_REFRESH_DEVICES)
-        fun startDemo(context: Context) = send(context, ACTION_START_DEMO)
-        fun stopDemo(context: Context) = send(context, ACTION_STOP_DEMO)
+        fun retryConnect(context: Context) = send(context, ACTION_RETRY_CONNECT)
         fun demoBoost(context: Context) = send(context, ACTION_DEMO_BOOST)
 
         /**
@@ -135,33 +159,102 @@ class ThermometerService : android.app.Service() {
     private val deviceDao by lazy { AppDatabase.get(this).deviceDao() }
 
     private val gatts = ConcurrentHashMap<String, BluetoothGatt>()
+
+    /**
+     * Pooleliolevad ühendumiskatsed, aadress → algusaeg.
+     *
+     * Iga connectGatt annab Androidilt uue GATT-kliendi. Meie mäletame ainult
+     * viimast — kui kaks katset satuvad korraga käima, jääb esimene klient
+     * rippuma ja hoiab baasi ühenduses. Ühenduses seade ei reklaami end, seega
+     * otsing ei leia teda üles ja tema andmed käivad vale kliendi kaudu.
+     */
+    private val connecting = ConcurrentHashMap<String, Long>()
     private val knownProbeAddresses = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var knownBaseAddresses: List<String> = emptyList()
 
     private var scanningForBases = false
+    private var scanStartedAt = 0L
     private var running = false
+
+    /** Praegune foreground service'i tüüp; 0 = Bluetoothi luba puudub. */
+    private var foregroundType = -1
     private var lastNotificationUpdate = 0L
 
     @Volatile
     private var lastFrameAt = 0L
 
     /**
-     * Ühendus võib jääda püsti ka siis, kui mõõtmisi enam ei tule. Ilma selle
-     * valveta jääks äpp näitama vana numbrit ja alarm ei käivituks kunagi.
+     * Millal ühendus viimati katkes. Nullitakse iga saabunud paketiga, seega
+     * mõõdab see katkematut ebaõnnestumise seeriat, mitte üksikuid tõrkeid.
+     */
+    @Volatile
+    private var connectionLostSince = 0L
+
+    /** Taasühendamine on alla antud — ootame kasutaja nuppu. */
+    @Volatile
+    private var connectionGivenUp = false
+
+    /** Millal küsisime lingilt elumärki; 0 = ei oota vastust. */
+    @Volatile
+    private var livenessAskedAt = 0L
+
+    /** Millal link viimati elumärgile vastas. */
+    @Volatile
+    private var lastLivenessOkAt = 0L
+
+    /**
+     * Ühendus võib jääda püsti ka siis, kui mõõtmisi enam ei tule — nii juhtus
+     * lekkinud GATT-klientidega, kus alarm oleks jäänud tulemata.
+     *
+     * Vaikus üksi ei tõesta aga midagi: kui ükski sond ei ole aktiivne (näiteks
+     * laeb pesas), ei ole baasil lihtsalt midagi öelda. Seetõttu küsime enne
+     * taasühendamist lingilt signaalitugevust — vastus tõestab, et ühendus
+     * elab. Ilma selleta jäi äpp tsüklisse "Ühendatud → andmevoog katkes →
+     * ühendatud", kuigi baasiga oli kõik korras.
      */
     private val staleDataWatchdog = object : Runnable {
+        @SuppressLint("MissingPermission")
         override fun run() {
-            val silentFor = System.currentTimeMillis() - lastFrameAt
-            if (running && lastFrameAt > 0L && silentFor > STALE_DATA_TIMEOUT_MS) {
-                Log.w(TAG, "Mõõtmisi pole ${silentFor} ms — taasühendan")
-                ThermometerRepository.setError("Andmevoog katkes, taasühendan…")
-                lastFrameAt = System.currentTimeMillis()
-                reconnectAll()
+            val now = System.currentTimeMillis()
+            val silentFor = now - lastFrameAt
+            val watching = running && !connectionGivenUp && lastFrameAt > 0L &&
+                gatts.isNotEmpty() && silentFor > STALE_DATA_TIMEOUT_MS
+
+            when {
+                !watching -> livenessAskedAt = 0L
+
+                // Küpsetuse ajal peab andmeid tulema. Kui neid pikalt ei ole,
+                // ei aita elumärk — teeme ühenduse uueks.
+                cookInProgress() && silentFor > COOKING_SILENCE_TIMEOUT_MS ->
+                    forceReconnect(silentFor)
+
+                // Küsimus jäi vastuseta: link on päriselt katki.
+                livenessAskedAt != 0L && now - livenessAskedAt > LIVENESS_REPLY_TIMEOUT_MS ->
+                    forceReconnect(silentFor)
+
+                livenessAskedAt == 0L && now - lastLivenessOkAt > LIVENESS_INTERVAL_MS -> {
+                    livenessAskedAt = now
+                    gatts.values.forEach { gatt ->
+                        runCatching { gatt.readRemoteRssi() }
+                        // Kui link elab, aga andmeid ei tule, võib tellimus olla
+                        // vaikselt kadunud. Uuesti tellimine on kahjutu: magava
+                        // sondi puhul ei muutu sellest midagi.
+                        runCatching { enableNotifications(gatt) }
+                    }
+                }
             }
             handler.postDelayed(this, WATCHDOG_INTERVAL_MS)
         }
+    }
+
+    private fun forceReconnect(silentFor: Long) {
+        Log.w(TAG, "Andmeid pole $silentFor ms ja link ei vasta — taasühendan")
+        ThermometerRepository.setError("Andmevoog katkes, taasühendan…")
+        livenessAskedAt = 0L
+        lastFrameAt = System.currentTimeMillis()
+        reconnectAll()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -193,6 +286,31 @@ class ThermometerService : android.app.Service() {
                         notificationManager.cancel(NOTIFICATION_ID_ALARM)
                     }
                 }
+        }
+
+        // Baaside register juhib ühendusi otse. Varem käivitas UI eemaldamise
+        // järel eraldi käsu, aga kustutamine käis taustal ja teenus jõudis
+        // registrit lugeda enne, kui rida kadus — baas jäi ühendusse, sondid
+        // saatsid edasi andmeid ja skaneerimine ei leidnud teda enam üles,
+        // sest ühenduses seade ei reklaami end.
+        serviceScope.launch {
+            deviceDao.observeBases().collect { bases ->
+                val addresses = bases.map { it.address }
+                val removed = knownBaseAddresses.filterNot { it in addresses }
+                knownBaseAddresses = addresses
+                removed.forEach { forgetBase(it) }
+                reloadBasesAndConnect()
+            }
+        }
+
+        // Demo sondil ei ole eraldi käivitusnuppu ega režiimi: simulaator käib
+        // täpselt siis, kui sellel sondil on siht. Nii käitub ta täpselt nagu
+        // päris sond, kes seisab toatemperatuuril, kuni liha ahju paned.
+        serviceScope.launch {
+            ThermometerRepository.state
+                .map { it.probes[DEMO_PROBE_ADDRESS]?.isCooking == true }
+                .distinctUntilChanged()
+                .collect { cooking -> if (cooking) startDemoSim() else stopDemoSim() }
         }
 
         // Seansi elutsükkel käib sihi järgi, iga sondi kohta eraldi.
@@ -245,9 +363,15 @@ class ThermometerService : android.app.Service() {
             }
             ACTION_SCAN_BASES -> startBaseScan()
             ACTION_STOP_SCAN -> stopBaseScan()
-            ACTION_START_DEMO -> startDemo()
-            ACTION_STOP_DEMO -> stopDemo()
-            ACTION_DEMO_BOOST -> demoBoostCelsius += 10.0
+            ACTION_DEMO_BOOST -> demoBoost()
+            // Kõik kolm on kasutaja enda tegevused: äpi avamine, käsitsi nupp
+            // või baasi lisamine. Kui ta ise midagi ette võtab, alustame
+            // proovimist otsast, ka siis kui olime alla andnud.
+            ACTION_RETRY_CONNECT, ACTION_START, ACTION_REFRESH_DEVICES -> {
+                connectionLostSince = 0L
+                connectionGivenUp = false
+                reloadBasesAndConnect()
+            }
             else -> reloadBasesAndConnect()
         }
         return START_STICKY
@@ -266,32 +390,41 @@ class ThermometerService : android.app.Service() {
      * @return kas teenus tohib edasi töötada.
      *
      * `connectedDevice` tüüpi foreground service'i käivitamine ilma Bluetoothi
-     * loata viskab SecurityException'i ja tapab protsessi. Värskel paigaldusel
-     * ei ole luba veel antud, seega tuleb siit vaikselt taganeda — mitte
-     * kokku kukkuda.
+     * loata viskab SecurityException'i ja tapab protsessi. Ilma loata käivitame
+     * seega tüübita teenuse: Bluetoothi pool jääb seisma, aga demo sond, alarm
+     * ja ajalugu töötavad. Loa saabudes tõstame tüübi õigeks.
      */
     private fun ensureForeground(): Boolean {
-        if (running) return true
-
-        if (!hasBlePermissions()) {
-            ThermometerRepository.setConnection(ConnectionState.STOPPED)
-            ThermometerRepository.setError("Bluetoothi luba puudub")
-            stopSelf()
-            return false
+        val wantedType = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0
+            // Tüübita teenust Android 14+ enam ei luba, kui manifest tüübi
+            // deklareerib — seega specialUse, mis ühtegi luba ei nõua.
+            !hasBlePermissions() ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    0
+                }
+            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         }
+        if (running && foregroundType == wantedType) return true
 
         val started = runCatching {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID_ONGOING,
                 buildOngoingNotification(),
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                } else {
-                    0
-                },
+                wantedType,
             )
         }.isSuccess
+
+        if (started) {
+            foregroundType = wantedType
+            if (!hasBlePermissions()) {
+                ThermometerRepository.setConnection(ConnectionState.STOPPED)
+                ThermometerRepository.setError("Bluetoothi luba puudub")
+            }
+        }
 
         if (!started) {
             Log.e(TAG, "Foreground service't ei õnnestunud käivitada")
@@ -321,6 +454,14 @@ class ThermometerService : android.app.Service() {
         serviceScope.launch {
             val bases = deviceDao.bases().map { it.address }
             knownBaseAddresses = bases
+
+            // Lahtiütlemine käib enne ühendamist ja alati. Varem oli siin tühja
+            // nimekirja korral kiire väljapääs — viimase baasi eemaldamisel jäi
+            // ühendus seetõttu vaikselt alles. Ühenduses seade aga ei reklaami
+            // end, nii et otsing ei leidnud teda enam kunagi üles ja aitas
+            // ainult protsessi tapmine.
+            gatts.keys.filterNot { it in bases }.forEach { disconnectFrom(it) }
+
             if (bases.isEmpty()) {
                 ThermometerRepository.setConnection(ConnectionState.STOPPED)
                 return@launch
@@ -328,13 +469,12 @@ class ThermometerService : android.app.Service() {
             bases.forEach { address ->
                 if (!gatts.containsKey(address)) connectTo(address)
             }
-            // Baasid, mis kasutaja vahepeal eemaldas.
-            gatts.keys.filterNot { it in bases }.forEach { disconnectFrom(it) }
         }
     }
 
     private fun shutdown() {
         running = false
+        foregroundType = -1
         alarmPlayer.stop()
         CookRecorder.endAllSessions()
         teardownBle()
@@ -358,11 +498,25 @@ class ThermometerService : android.app.Service() {
 
     @SuppressLint("MissingPermission")
     private fun startBaseScan() {
-        if (scanningForBases) return
+        // "Otsing käib" on lipp, mille maha võtab käsuga postitatud tagasikutse.
+        // Kui see tagasikutse kaob — näiteks koos teiste käskudega ühenduse
+        // koristamisel — jääb lipp igaveseks püsti ja iga järgmine otsing
+        // katkeb kohe alguses. Väljastpoolt paistab see nii, nagu baasi enam ei
+        // olekski, ja aitab ainult protsessi tapmine. Seepärast ei usu me lippu
+        // pimesi, vaid kontrollime kella.
+        if (scanningForBases) {
+            val runningFor = System.currentTimeMillis() - scanStartedAt
+            if (runningFor < BASE_SCAN_TIMEOUT_MS) return
+            Log.w(TAG, "Otsingu lipp jäi $runningFor ms püsti — võtan maha")
+            stopBaseScan()
+        }
+
         val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
 
         scanningForBases = true
+        scanStartedAt = System.currentTimeMillis()
         ThermometerRepository.setScanningForBases(true)
+        Log.i(TAG, "Alustan baasiotsingut")
 
         // Teadlikult ilma ScanFilter'ita: A5 ei advertise oma teenuse UUID-d ja
         // nimefilter jätab osal seadmetel scan response'i vahele.
@@ -397,9 +551,16 @@ class ThermometerService : android.app.Service() {
         }
 
         override fun onScanFailed(errorCode: Int) {
+            Log.w(TAG, "Otsing ebaõnnestus, kood $errorCode")
             scanningForBases = false
             ThermometerRepository.setScanningForBases(false)
-            ThermometerRepository.setError("Skaneerimine ebaõnnestus (kood $errorCode)")
+            ThermometerRepository.setError(
+                if (errorCode == ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY) {
+                    "Android piiras otsingut — oota pool minutit ja proovi uuesti"
+                } else {
+                    "Otsing ebaõnnestus (kood $errorCode)"
+                },
+            )
         }
     }
 
@@ -408,12 +569,24 @@ class ThermometerService : android.app.Service() {
     @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION")
     private fun connectTo(address: String) {
+        // Ühendumiskäske tuleb mitmest suunast korraga: registri jälgija,
+        // kasutaja käsk, taasühendamine ja valvekoer. Ilma selle väravata
+        // jõuavad kaks neist samal ajal kohale ja Android teeb kaks klienti.
+        val attemptStartedAt = connecting[address]
+        if (attemptStartedAt != null &&
+            System.currentTimeMillis() - attemptStartedAt < CONNECT_ATTEMPT_TIMEOUT_MS
+        ) {
+            Log.i(TAG, "Ühendumine baasiga $address juba käib — teist ei alusta")
+            return
+        }
+
         val adapter = bluetoothAdapter ?: return
         val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull() ?: return
 
         // Vana klient tuleb alati sulgeda, muidu jäävad GATT-ühendused lekkima.
         // Androidil on neid piiratud arv ja täis registriga lakkab asi töötamast.
         gatts.remove(address)?.let { runCatching { it.close() } }
+        connecting[address] = System.currentTimeMillis()
 
         ThermometerRepository.setConnection(ConnectionState.CONNECTING)
         ThermometerRepository.setError(null)
@@ -427,7 +600,7 @@ class ThermometerService : android.app.Service() {
         // ja kuna alarmi kontrollitakse iga mõõtmise peale, jääks alarm tulemata.
         // Taasühendumise eest hoolitseb scheduleReconnect, mitte stack.
         val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        if (gatt != null) gatts[address] = gatt
+        if (gatt != null) gatts[address] = gatt else connecting.remove(address)
     }
 
     // ------------------------------------------------------------------- demo
@@ -438,71 +611,52 @@ class ThermometerService : android.app.Service() {
     private var demoBoostCelsius = 0.0
 
     /**
-     * Millal demo "liha ahju pandi". Sond seisab toatemperatuuril seni, kuni
-     * siht on valimata — päris sond ju ka ei soojene enne, kui küpsetama hakkad.
-     * Eraldi väljana, mitte probe.timerStartedAt pealt: sihi muutmine keset
-     * küpsetust nullib stopperi, aga liha ei jahtu selle peale tagasi.
-     */
-    @Volatile
-    private var demoCookStartedAt: Long? = null
-
-    /**
      * Demo asendab ainult andmeallika. Kõik ülejäänu — alarm, salvestamine,
      * teavitus — käib täpselt sama koodi kaudu mis päris anduri puhul, muidu
      * ei testiks demo midagi.
      */
-    private fun startDemo() {
+    private fun startDemoSim() {
         if (demoJob != null) return
 
-        teardownBle()
-        demoBoostCelsius = 0.0
-        demoCookStartedAt = null
-        ThermometerRepository.setDemoMode(true)
-        ThermometerRepository.setConnection(ConnectionState.CONNECTED)
-
+        val startedAt = System.currentTimeMillis()
         demoJob = serviceScope.launch {
             while (isActive) {
-                val now = System.currentTimeMillis()
-                val cooking = ThermometerRepository.state.value
-                    .probes[DEMO_PROBE_ADDRESS]?.isCooking == true
-                if (cooking) {
-                    if (demoCookStartedAt == null) demoCookStartedAt = now
-                } else if (demoCookStartedAt != null) {
-                    // "Lõpeta" — järgmine küpsetus algab jälle nullist.
-                    demoCookStartedAt = null
-                    demoBoostCelsius = 0.0
-                }
-
-                val base = demoCookStartedAt?.let { startedAt ->
-                    val seconds = (now - startedAt) / 1000.0
-                    // Newtoni jahtumisseadus tagurpidi: kiire tõus alguses, siis
-                    // aeglustub — nagu päris lihal ahjus.
-                    OVEN_C - (OVEN_C - AMBIENT_C) * exp(-seconds / DEMO_TAU_S)
-                } ?: AMBIENT_C
-                val celsius = min(150.0, base + demoBoostCelsius)
-                // Päris andur annab täiskraade, demo teeb sama.
-                processReading(
-                    A5sProtocol.Reading(
-                        address = DEMO_PROBE_ADDRESS,
-                        celsius = celsius.roundToInt().toDouble(),
-                        batteryRaw = 85,
-                    ),
-                )
+                val seconds = (System.currentTimeMillis() - startedAt) / 1000.0
+                // Newtoni jahtumisseadus tagurpidi: kiire tõus alguses, siis
+                // aeglustub — nagu päris lihal ahjus.
+                val natural = OVEN_C - (OVEN_C - DEMO_AMBIENT_C) * exp(-seconds / DEMO_TAU_S)
+                emitDemoReading(natural + demoBoostCelsius)
                 delay(1000)
             }
         }
-        handler.removeCallbacks(staleDataWatchdog)
-        handler.postDelayed(staleDataWatchdog, WATCHDOG_INTERVAL_MS)
     }
 
-    private fun stopDemo() {
+    /** Siht maha võetud — sond läheb tagasi toatemperatuurile ja jääb sinna. */
+    private fun stopDemoSim() {
         demoJob?.cancel()
         demoJob = null
-        demoCookStartedAt = null
         demoBoostCelsius = 0.0
-        CookRecorder.endSession(DEMO_PROBE_ADDRESS)
-        ThermometerRepository.setDemoMode(false)
-        reloadBasesAndConnect()
+        emitDemoReading(DEMO_AMBIENT_C)
+    }
+
+    /**
+     * "+10 °C" kiirendab ootamist. Töötab ka enne küpsetuse algust, sest just
+     * nii saab katsetada hoiatust "siht on juba käes".
+     */
+    private fun demoBoost() {
+        demoBoostCelsius += 10.0
+        if (demoJob == null) emitDemoReading(DEMO_AMBIENT_C + demoBoostCelsius)
+    }
+
+    /** Päris andur annab täiskraade, demo teeb sama. */
+    private fun emitDemoReading(celsius: Double) {
+        processReading(
+            A5sProtocol.Reading(
+                address = DEMO_PROBE_ADDRESS,
+                celsius = min(150.0, celsius).roundToInt().toDouble(),
+                batteryRaw = 100,
+            ),
+        )
     }
 
     /** Kõik ühendused kinni ja uuesti lahti — kasutab valvekoer. */
@@ -513,15 +667,68 @@ class ThermometerService : android.app.Service() {
             runCatching { gatt.close() }
         }
         gatts.clear()
+        connecting.clear()
         ThermometerRepository.state.value.connectedBases.forEach {
             ThermometerRepository.setBaseConnected(it, false)
         }
         handler.postDelayed({ if (running) reloadBasesAndConnect() }, RECONNECT_DELAY_MS)
     }
 
+    /**
+     * Tellib mõõtmiste teavitused. Eraldi funktsioon, sest seda on vaja nii
+     * ühendumisel kui hiljem: kui link elab, aga andmeid ei tule, võib tellimus
+     * olla vaikselt kadunud ja uuesti tellimine on odavam kui ühenduse
+     * lammutamine.
+     *
+     * @return kas tellimine üldse õnnestus.
+     */
+    @SuppressLint("MissingPermission")
+    private fun enableNotifications(g: BluetoothGatt): Boolean {
+        val characteristic = g.getService(A5sProtocol.SERVICE_UUID)
+            ?.getCharacteristic(A5sProtocol.DATA_CHARACTERISTIC_UUID)
+        if (characteristic == null) {
+            ThermometerRepository.setError("Seadmel ${g.device.address} puudub oodatud teenus")
+            return false
+        }
+
+        g.setCharacteristicNotification(characteristic, true)
+
+        val cccd = characteristic.getDescriptor(A5sProtocol.CCCD_UUID) ?: run {
+            ThermometerRepository.setError("CCCD deskriptorit ei leitud")
+            return false
+        }
+
+        val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, enable)
+        } else {
+            @Suppress("DEPRECATION")
+            cccd.value = enable
+            @Suppress("DEPRECATION")
+            g.writeDescriptor(cccd)
+        }
+        return true
+    }
+
+    /**
+     * Baas eemaldati registrist: ühendus kinni ja tema sondid nimekirjast ära.
+     *
+     * Registrikirjeid me ei kustuta — nii ei kao sondi nimi, kui kasutaja baasi
+     * hiljem tagasi lisab. Nimekirjast peidab nad ProbeListScreen, sest sondi
+     * ilma baasita ei ole kuskilt kuulata.
+     */
+    private suspend fun forgetBase(address: String) {
+        disconnectFrom(address)
+        val probes = deviceDao.probesOfBase(address).map { it.address }
+        ThermometerRepository.forgetProbes(probes)
+        Log.i(TAG, "Baas $address eemaldatud, ${probes.size} sondi peidetud")
+    }
+
     @SuppressLint("MissingPermission")
     private fun disconnectFrom(address: String) {
+        connecting.remove(address)
         gatts.remove(address)?.let {
+            Log.i(TAG, "Katkestan ühenduse baasiga $address")
             runCatching { it.disconnect() }
             runCatching { it.close() }
         }
@@ -530,14 +737,58 @@ class ThermometerService : android.app.Service() {
 
     @SuppressLint("MissingPermission")
     private fun scheduleReconnect(address: String) {
-        if (!running) return
+        connecting.remove(address)
+        if (!running || connectionGivenUp) return
         gatts.remove(address)?.let { runCatching { it.close() } }
         ThermometerRepository.setBaseConnected(address, false)
         if (ThermometerRepository.state.value.connectedBases.isEmpty()) {
             ThermometerRepository.setConnection(ConnectionState.RECONNECTING)
         }
         if (address !in knownBaseAddresses) return
-        handler.postDelayed({ if (running) connectTo(address) }, RECONNECT_DELAY_MS)
+
+        val now = System.currentTimeMillis()
+        if (connectionLostSince == 0L) connectionLostSince = now
+        val failingFor = now - connectionLostSince
+
+        // Käimasoleva küpsetuse ajal ei anna kunagi alla: alarm on siis ainus,
+        // mis liha söödavana hoiab. Jõude olles ei ole mõtet akut tühjaks
+        // proovida — kasutaja saab nupust uuesti alustada.
+        if (failingFor > CONNECT_GIVE_UP_MS && !cookInProgress()) {
+            giveUpConnecting()
+            return
+        }
+
+        // Mida kauem ei õnnestu, seda harvem proovime.
+        val delayMs = when {
+            failingFor < 30_000L -> RECONNECT_DELAY_MS
+            failingFor < 60_000L -> 5_000L
+            else -> 15_000L
+        }
+        handler.postDelayed(
+            { if (running && !connectionGivenUp) connectTo(address) },
+            delayMs,
+        )
+    }
+
+    /** Päris küpsetus — demo ei loe, see ei sõltu Bluetoothist. */
+    private fun cookInProgress(): Boolean =
+        ThermometerRepository.state.value.probes.values.any { it.isCooking && !it.isDemo }
+
+    @SuppressLint("MissingPermission")
+    private fun giveUpConnecting() {
+        Log.w(TAG, "Ühendust ei saanud ${CONNECT_GIVE_UP_MS} ms jooksul — lõpetan proovimise")
+        connectionGivenUp = true
+        gatts.values.forEach {
+            runCatching { it.disconnect() }
+            runCatching { it.close() }
+        }
+        gatts.clear()
+        connecting.clear()
+        ThermometerRepository.state.value.connectedBases.forEach {
+            ThermometerRepository.setBaseConnected(it, false)
+        }
+        ThermometerRepository.setConnection(ConnectionState.GAVE_UP)
+        ThermometerRepository.setError(null)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -547,6 +798,7 @@ class ThermometerService : android.app.Service() {
             val address = g.device.address
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    connecting.remove(address)
                     Log.i(TAG, "Ühendatud baasiga $address, otsin teenuseid")
                     g.discoverServices()
                 }
@@ -565,34 +817,29 @@ class ThermometerService : android.app.Service() {
                 return
             }
 
-            val characteristic = g.getService(A5sProtocol.SERVICE_UUID)
-                ?.getCharacteristic(A5sProtocol.DATA_CHARACTERISTIC_UUID)
-            if (characteristic == null) {
-                ThermometerRepository.setError("Seadmel $address puudub oodatud teenus")
+            if (!enableNotifications(g)) {
                 scheduleReconnect(address)
                 return
             }
 
-            g.setCharacteristicNotification(characteristic, true)
-
-            val cccd = characteristic.getDescriptor(A5sProtocol.CCCD_UUID)
-            if (cccd == null) {
-                ThermometerRepository.setError("CCCD deskriptorit ei leitud")
-                return
-            }
-
-            val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                g.writeDescriptor(cccd, enable)
-            } else {
-                @Suppress("DEPRECATION")
-                cccd.value = enable
-                @Suppress("DEPRECATION")
-                g.writeDescriptor(cccd)
-            }
-
             ThermometerRepository.setBaseConnected(address, true)
             ThermometerRepository.setConnection(ConnectionState.CONNECTED)
+            ThermometerRepository.setError(null)
+        }
+
+        /**
+         * Vastus tähendab, et link elab — ka siis, kui mõõtmisi ei tule. Nihutame
+         * vaikuse arvestuse ette, et valvekoer ei hakkaks põhjuseta ühendust
+         * lammutama.
+         */
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            // NB: lastFrameAt jääb puutumata. Elumärk tõestab linki, mitte
+            // andmevoogu — kui me seda siin nihutaksime, ei saaks küpsetuse
+            // ajal kunagi teada, et mõõtmised on päriselt lakanud.
+            livenessAskedAt = 0L
+            lastLivenessOkAt = System.currentTimeMillis()
+            connectionLostSince = 0L
             ThermometerRepository.setError(null)
         }
 
@@ -643,6 +890,7 @@ class ThermometerService : android.app.Service() {
         // mida me edasi ei kasuta. Ilma selleta loeks valvekoer magava sondi
         // katkiseks ühenduseks ja taasühendaks lõputult.
         lastFrameAt = System.currentTimeMillis()
+        connectionLostSince = 0L
 
         val reading = A5sProtocol.parse(value) ?: return
         registerProbeIfNew(reading.address, baseAddress)
@@ -651,7 +899,9 @@ class ThermometerService : android.app.Service() {
 
     /** Ühine töötlus päris ja demo mõõtmistele. */
     private fun processReading(reading: A5sProtocol.Reading) {
-        lastFrameAt = System.currentTimeMillis()
+        // NB: lastFrameAt't siin ei puutu. Demo mõõtmised ei tohi valvekoerale
+        // valetada, et BLE-ühendus elab — muidu ei märkaks ta surnud andmevoogu
+        // ajal, mil demo sond parasjagu jookseb.
         ThermometerRepository.publishReading(reading)
         CookRecorder.record(reading.address, reading.celsius)
         checkAlarm(reading.address, reading.celsius)

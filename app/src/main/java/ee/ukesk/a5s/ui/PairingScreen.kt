@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -43,6 +44,9 @@ import ee.ukesk.a5s.data.db.AppDatabase
 import ee.ukesk.a5s.data.db.KnownBaseEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+
+/** Neli nelja-sekundilist ringi ehk umbes 16 sekundit otsimist korraga. */
+private const val SEARCH_ROUNDS = 4
 
 /**
  * Paaritamine. Telefon ühendub baasiga (puidust pesa) — sondid ilmuvad ise
@@ -66,24 +70,22 @@ fun PairingScreen(
 
     val candidatesEmpty = state.discoveredBases.none { it.address !in knownAddresses }
 
-    // Anname otsingule aega, enne kui väljapääsu pakume — muidu vilguks
-    // "ei leidnud" kohe, kui leht avaneb.
-    var searchedLongEnough by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(12_000)
-        searchedLongEnough = true
-    }
-
-    // Otsime pidevalt, kuni sellel lehel ollakse. See katab ühtlasi juhtumi, kus
-    // Bluetoothi luba anti alles pärast lehe avanemist või kus 30-sekundiline
-    // skaneerimisaken sai täis.
-    LaunchedEffect(Unit) {
-        while (true) {
+    // Otsime kindla aja, mitte lõputult: pidev skaneerimine sööb akut ja jätab
+    // ekraani igavesse "Otsin…" olekusse. Pärast seda ootab "Proovi uuesti".
+    var searchRound by remember { mutableIntStateOf(0) }
+    var searching by remember { mutableStateOf(true) }
+    LaunchedEffect(searchRound) {
+        searching = true
+        // Kordame skaneerimist ringi sees, sest luba võidi anda alles pärast
+        // lehe avanemist ja skaneerimisaken võib vahepeal täis saada.
+        repeat(SEARCH_ROUNDS) {
             if (!ThermometerRepository.state.value.scanningForBases) {
                 ThermometerService.scanForBases(context)
             }
             kotlinx.coroutines.delay(4000)
         }
+        ThermometerService.stopScan(context)
+        searching = false
     }
     DisposableEffect(Unit) {
         onDispose { ThermometerService.stopScan(context) }
@@ -112,8 +114,7 @@ fun PairingScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Lülita A5S baas sisse ja hoia see telefoni lähedal. " +
-                    "Telefon ühendub baasiga; sondid ilmuvad pärast seda ise nähtavale.",
+                text = "Lülita A5S baas sisse ja hoia telefoni lähedal.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -121,7 +122,7 @@ fun PairingScreen(
             Spacer(Modifier.height(20.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.scanningForBases) {
+                if (searching) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
@@ -129,47 +130,33 @@ fun PairingScreen(
                     Spacer(Modifier.padding(horizontal = 6.dp))
                 }
                 Text(
-                    text = if (state.scanningForBases) "Otsin…" else "Otsing peatatud",
+                    text = if (searching) "Otsin…" else "Otsing peatatud",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            // Väljapääs. Varem olid need nupud skaneerimise tingimuse taga ja
-            // kuna otsing kordub automaatselt, ei ilmunud need mitte kunagi —
-            // ekraan jäi igavesse "Otsin…" tsüklisse.
-            if (searchedLongEnough && candidatesEmpty) {
+            if (!searching && candidatesEmpty) {
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    text = "Baasi ei leitud. Kontrolli, kas see on sisse lülitatud ja " +
-                        "telefoni lähedal.",
+                    text = "Baasi ei leitud.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = { ThermometerService.scanForBases(context) }) {
-                        Text("Proovi uuesti")
+                    Button(onClick = { searchRound++ }) { Text("Proovi uuesti") }
+                    if (isFirstRun) {
+                        OutlinedButton(onClick = onDone) { Text("Jätka ilma baasita") }
                     }
-                    Button(onClick = {
-                        ThermometerService.startDemo(context)
-                        onDone()
-                    }) { Text("Demo") }
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Demo näitab äpi tööd virtuaalse sondiga, ilma päris " +
-                        "termomeetrita.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
 
             Spacer(Modifier.height(16.dp))
 
             val candidates = state.discoveredBases.filterNot { it.address in knownAddresses }
             if (candidates.isEmpty()) {
-                if (!searchedLongEnough) {
+                if (searching) {
                     Text(
                         text = "Ühtegi uut baasi pole veel leitud.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -224,9 +211,11 @@ fun PairingScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        // Ainult kustutamine: teenus jälgib registrit ise ja
+                        // võtab ühenduse maha. Eraldi käsku siit ei saada, sest
+                        // see jõudis varem kohale enne kustutamist.
                         TextButton(onClick = {
                             scope.launch(Dispatchers.IO) { dao.deleteBase(base.address) }
-                            ThermometerService.refreshDevices(context)
                         }) { Text("Eemalda") }
                     }
                 }

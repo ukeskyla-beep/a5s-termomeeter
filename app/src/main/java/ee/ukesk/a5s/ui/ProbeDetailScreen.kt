@@ -20,6 +20,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -77,7 +78,7 @@ fun ProbeDetailScreen(
         }
     }
 
-    val readingIsStale = probe != null && now - probe.lastUpdateAt > 30_000L
+    val readingIsStale = probe?.isReadingStale(now) == true
 
     Scaffold { innerPadding ->
         Column(
@@ -107,6 +108,23 @@ fun ProbeDetailScreen(
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.clickable { renameOpen = true },
             )
+
+            if (probe.isDemo) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "simuleeritud andur",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(onClick = { ThermometerService.demoBoost(context) }) {
+                        Text("+10 °C")
+                    }
+                }
+            }
 
             if (state.alarmSounding) {
                 Card(

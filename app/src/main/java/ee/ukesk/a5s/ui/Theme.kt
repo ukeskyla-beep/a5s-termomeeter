@@ -46,6 +46,13 @@ private val A5sColors = darkColorScheme(
 /** Roheline "siht käes" tähistamiseks — küps, mitte kilecirkus. */
 val TargetReachedGreen = Color(0xFF86D18A)
 
+/**
+ * Demo sond. Jahe sinakas toon on sütitoonide seas kohe eristatav, nii et
+ * virtuaalset sondi ei aja päris anduriga kunagi segi.
+ */
+val DemoSurface = Color(0xFF1B2731)
+val DemoAccent = Color(0xFF8FB6CE)
+
 @Composable
 fun A5sTheme(content: @Composable () -> Unit) {
     MaterialTheme(

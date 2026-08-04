@@ -20,6 +20,8 @@ siis, kui ekraan on kustunud.
 - Hoiatab, kui aku optimeerimine või liiga vaikne äratuse helitugevus võiks alarmi ära rikkuda
 - Küpsetuse ajalugu koos küpsetuskõveraga (Room + Compose Canvas)
 - Mitu sondi korraga, igaühel oma siht ja oma alarm
+- Demo sond andurite nimekirjas: kogu äppi saab läbi katsuda ka ilma riistvarata,
+  eraldi režiimi sisse lülitama ei pea
 
 ## Protokoll
 

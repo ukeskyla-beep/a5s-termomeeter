@@ -40,6 +40,12 @@ interface DeviceDao {
     @Query("DELETE FROM known_probe WHERE address = :address")
     suspend fun deleteProbe(address: String)
 
+    @Query("SELECT * FROM known_probe WHERE baseAddress = :baseAddress")
+    suspend fun probesOfBase(baseAddress: String): List<KnownProbeEntity>
+
+    @Query("DELETE FROM known_probe WHERE baseAddress = :baseAddress")
+    suspend fun deleteProbesOfBase(baseAddress: String)
+
     // ------------------------------------------------------- omad temperatuurid
 
     @Insert

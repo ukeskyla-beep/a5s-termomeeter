@@ -55,9 +55,11 @@ fun AppRoot(
 
     val bases by dao.observeBases().collectAsStateWithLifecycle(initialValue = null)
     val unit by Settings.unit.collectAsStateWithLifecycle()
-    val state by ee.ukesk.a5s.ble.ThermometerRepository.state.collectAsStateWithLifecycle()
 
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    // Baasita saab edasi minna — andurite nimekirjas ootab demo sond, millega
+    // saab kogu äppi läbi katsuda.
+    var skippedPairing by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     // Load ja ühendus kohe käivitumisel — eraldi "Ühenda" nuppu ei ole.
@@ -67,11 +69,13 @@ fun AppRoot(
     val knownBases = bases
     if (knownBases == null) return // andmebaas veel laeb
 
-    // Demo asendab baasi, seega paaritamise lehte enam näidata ei tohi.
-    if (knownBases.isEmpty() && !state.demoMode) {
+    if (knownBases.isEmpty() && !skippedPairing) {
         PairingScreen(
             isFirstRun = true,
-            onDone = { screen = Screen.Home },
+            onDone = {
+                skippedPairing = true
+                screen = Screen.Home
+            },
             onBack = null,
         )
         return
@@ -148,28 +152,6 @@ fun AppRoot(
                         selected = false,
                         onClick = {
                             screen = Screen.AddDevice
-                            scope.launch { drawerState.close() }
-                        },
-                    )
-                    NavigationDrawerItem(
-                        label = {
-                            Column {
-                                Text(if (state.demoMode) "Lõpeta demo" else "Demo režiim")
-                                Text(
-                                    text = "Virtuaalne sond, ilma päris termomeetrita",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                        selected = state.demoMode,
-                        onClick = {
-                            if (state.demoMode) {
-                                ThermometerService.stopDemo(context)
-                            } else {
-                                ThermometerService.startDemo(context)
-                                screen = Screen.Home
-                            }
                             scope.launch { drawerState.close() }
                         },
                     )

@@ -27,10 +27,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            // Teenust tohib käivitada alles siis, kui luba on käes: connectedDevice
-            // tüüpi foreground service ilma Bluetoothi loata viskab
-            // SecurityException'i ja tapab protsessi.
-            startTrackingIfPermitted()
+            startTracking()
         }
 
     private val ringtoneLauncher =
@@ -65,10 +62,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Küsib load ja käivitab teenuse alles siis, kui need on olemas. */
     private fun requestPermissions() {
         if (hasBlePermissions()) {
-            startTrackingIfPermitted()
+            startTracking()
             return
         }
 
@@ -86,8 +82,14 @@ class MainActivity : ComponentActivity() {
         permissionLauncher.launch(needed.toTypedArray())
     }
 
-    private fun startTrackingIfPermitted() {
-        if (hasBlePermissions()) ThermometerService.start(this)
+    /**
+     * Teenus käivitub ka ilma Bluetoothi loata — siis jääb ainult BLE-pool
+     * seisma, aga demo sond, alarm ja ajalugu töötavad. Teenus ise valib
+     * foreground service'i tüübi lubade järgi, nii et SecurityException'it
+     * ei teki.
+     */
+    private fun startTracking() {
+        ThermometerService.start(this)
     }
 
     private fun hasBlePermissions(): Boolean =

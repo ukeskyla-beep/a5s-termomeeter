@@ -108,15 +108,26 @@ fun HelpScreen(onBack: () -> Unit) {
                     "Alla kahe mõõtepunktiga küpsetusi ei salvestata.",
             )
 
-            Section("Demo režiim")
+            Section("Demo sond")
             Body(
-                "Kui baasi ei leita, ilmuvad umbes 12 sekundi pärast nupud «Proovi " +
-                    "uuesti» ja «Demo». Demo annab virtuaalse sondi, millega saab kogu " +
-                    "äppi läbi katsuda ilma riistvarata.\n\n" +
-                    "Demo sond seisab toatemperatuuril, kuni valid sihi — siis hakkab " +
-                    "soojenema ja «Lõpeta» viib ta tagasi algusesse. Nupp «+10 °C» " +
-                    "kiirendab, et alarmi ootamine ei võtaks minuteid. Demo küpsetused " +
-                    "on ajaloos märkega «DEMO».",
+                "Andurite nimekirja lõpus on alati «Demo sond». See on virtuaalne " +
+                    "andur, millega saab kogu äppi läbi katsuda ka siis, kui päris " +
+                    "termomeetrit käepärast ei ole — eraldi demo režiimi sisse " +
+                    "lülitama ei pea.\n\n" +
+                    "Ta seisab toatemperatuuril, kuni valid sihi. Siis hakkab soojenema " +
+                    "nagu liha ahjus ja alarm käib täpselt nii nagu päris sondiga. " +
+                    "«Lõpeta» viib ta algusesse tagasi. Nupp «+10 °C» tema lehel " +
+                    "kiirendab, et alarmi ootamine ei võtaks minuteid.\n\n" +
+                    "Demo küpsetused on ajaloos märkega «DEMO».",
+            )
+
+            Section("Kui ühendust ei saa")
+            Body(
+                "Kui baas on kättesaamatu, proovib äpp umbes kaks minutit ja lõpetab " +
+                    "siis, et aku ei kuluks. Andurite lehele ilmub nupp «Ühenda " +
+                    "uuesti». Ka äpi uuesti avamine alustab proovimist otsast.\n\n" +
+                    "Käimasoleva küpsetuse ajal ei anna äpp kunagi alla — siis proovib " +
+                    "ta lõputult, sest alarm on ainus, mis liha põlemast päästab.",
             )
 
             Section("Mida see andur ei oska")
