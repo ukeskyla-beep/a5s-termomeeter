@@ -73,6 +73,7 @@ class ThermometerService : android.app.Service() {
         const val ACTION_REFRESH_DEVICES = "ee.ukesk.a5s.REFRESH_DEVICES"
         const val ACTION_RETRY_CONNECT = "ee.ukesk.a5s.RETRY_CONNECT"
         const val ACTION_DEMO_BOOST = "ee.ukesk.a5s.DEMO_BOOST"
+        const val ACTION_DEMO_RESET_BOOST = "ee.ukesk.a5s.DEMO_RESET_BOOST"
 
         private const val CHANNEL_ONGOING = "a5s_ongoing"
         private const val CHANNEL_ALARM = "a5s_alarm_v2"
@@ -131,6 +132,7 @@ class ThermometerService : android.app.Service() {
         fun refreshDevices(context: Context) = send(context, ACTION_REFRESH_DEVICES)
         fun retryConnect(context: Context) = send(context, ACTION_RETRY_CONNECT)
         fun demoBoost(context: Context) = send(context, ACTION_DEMO_BOOST)
+        fun demoResetBoost(context: Context) = send(context, ACTION_DEMO_RESET_BOOST)
 
         /**
          * Teadlikult startService, mitte startForegroundService. Viimane annab
@@ -364,6 +366,7 @@ class ThermometerService : android.app.Service() {
             ACTION_SCAN_BASES -> startBaseScan()
             ACTION_STOP_SCAN -> stopBaseScan()
             ACTION_DEMO_BOOST -> demoBoost()
+            ACTION_DEMO_RESET_BOOST -> demoResetBoost()
             // Kõik kolm on kasutaja enda tegevused: äpi avamine, käsitsi nupp
             // või baasi lisamine. Kui ta ise midagi ette võtab, alustame
             // proovimist otsast, ka siis kui olime alla andnud.
@@ -646,6 +649,16 @@ class ThermometerService : android.app.Service() {
     private fun demoBoost() {
         demoBoostCelsius += 10.0
         if (demoJob == null) emitDemoReading(DEMO_AMBIENT_C + demoBoostCelsius)
+    }
+
+    /**
+     * Lisatud kraadid maha. Eraldi nuppu ei ole: seda kutsub demo sondi lehelt
+     * lahkumine, nii et iga kord tuleb lehele tagasi puhas algseis.
+     */
+    private fun demoResetBoost() {
+        if (demoBoostCelsius == 0.0) return
+        demoBoostCelsius = 0.0
+        if (demoJob == null) emitDemoReading(DEMO_AMBIENT_C)
     }
 
     /** Päris andur annab täiskraade, demo teeb sama. */

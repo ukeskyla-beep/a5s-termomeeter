@@ -26,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -79,6 +80,19 @@ fun ProbeDetailScreen(
     }
 
     val readingIsStale = probe?.isReadingStale(now) == true
+
+    // Demo sondiga ei küpsetata, vaid vaadatakse, kuidas alarm käitub. Seega
+    // viib lahkumine ta täielikult algseisu: siht maha, stopper nulli, lisatud
+    // kraadid tagasi ja temperatuur toa peale. Nii algab järgmine sisenemine
+    // jälle protsessi algusest, mitte poole pealt.
+    if (probe?.isDemo == true) {
+        DisposableEffect(Unit) {
+            onDispose {
+                ThermometerRepository.finishCook(address)
+                ThermometerService.demoResetBoost(context)
+            }
+        }
+    }
 
     Scaffold { innerPadding ->
         Column(

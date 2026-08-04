@@ -118,6 +118,10 @@ fun HelpScreen(onBack: () -> Unit) {
                     "nagu liha ahjus ja alarm käib täpselt nii nagu päris sondiga. " +
                     "«Lõpeta» viib ta algusesse tagasi. Nupp «+10 °C» tema lehel " +
                     "kiirendab, et alarmi ootamine ei võtaks minuteid.\n\n" +
+                    "Demo sondi lehelt lahkumine lähtestab ta täielikult — siht maha " +
+                    "ja temperatuur toa peale. Nii algab järgmine vaatamine jälle " +
+                    "algusest. Päris sondil seda muidugi ei juhtu: seal jookseb " +
+                    "küpsetus taustal edasi.\n\n" +
                     "Demo küpsetused on ajaloos märkega «DEMO».",
             )
 
