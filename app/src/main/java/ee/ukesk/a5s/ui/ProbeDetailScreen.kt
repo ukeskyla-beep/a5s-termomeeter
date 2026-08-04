@@ -121,6 +121,12 @@ fun ProbeDetailScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
+                        Text(
+                            text = "Vaigistab ainult heli. Stopper ja salvestamine " +
+                                "jäävad käima — küpsetuse lõpetab «Lõpeta».",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = { ThermometerService.silenceAlarm(context) },

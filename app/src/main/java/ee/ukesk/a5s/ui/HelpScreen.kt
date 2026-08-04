@@ -77,6 +77,10 @@ fun HelpScreen(onBack: () -> Unit) {
                     "piiksu ei ole, sest grillimüra sees jääks see kuulmata. Peatada saab " +
                     "«Lõpeta» nupuga, teavituse nupuga või uue sihi valimisega. Ise vaikib " +
                     "ta viie minuti pärast.\n\n" +
+                    "«Peata alarm» ja «Lõpeta» ei ole sama asi. «Peata alarm» vaigistab " +
+                    "ainult heli — stopper jookseb ja graafik salvestub edasi, mis sobib " +
+                    "siis, kui tahad liha veel veidi ahjus hoida. «Lõpeta» paneb küpsetuse " +
+                    "kinni.\n\n" +
                     "5 °C enne sihti tuleb vaikne eelhoiatus.\n\n" +
                     "Helina saad valida menüüst. Kuuldavust tasub enne küpsetust kontrollida " +
                     "menüü «Testi alarmi» nupuga — alarm järgib telefoni ÄRATUSE " +
@@ -102,6 +106,17 @@ fun HelpScreen(onBack: () -> Unit) {
             Body(
                 "Iga küpsetus salvestub koos kõveraga. Ajaloo leiad menüüst. " +
                     "Alla kahe mõõtepunktiga küpsetusi ei salvestata.",
+            )
+
+            Section("Demo režiim")
+            Body(
+                "Kui baasi ei leita, ilmuvad umbes 12 sekundi pärast nupud «Proovi " +
+                    "uuesti» ja «Demo». Demo annab virtuaalse sondi, millega saab kogu " +
+                    "äppi läbi katsuda ilma riistvarata.\n\n" +
+                    "Demo sond seisab toatemperatuuril, kuni valid sihi — siis hakkab " +
+                    "soojenema ja «Lõpeta» viib ta tagasi algusesse. Nupp «+10 °C» " +
+                    "kiirendab, et alarmi ootamine ei võtaks minuteid. Demo küpsetused " +
+                    "on ajaloos märkega «DEMO».",
             )
 
             Section("Mida see andur ei oska")

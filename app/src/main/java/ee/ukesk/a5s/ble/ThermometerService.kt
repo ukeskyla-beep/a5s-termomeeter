@@ -438,6 +438,15 @@ class ThermometerService : android.app.Service() {
     private var demoBoostCelsius = 0.0
 
     /**
+     * Millal demo "liha ahju pandi". Sond seisab toatemperatuuril seni, kuni
+     * siht on valimata — päris sond ju ka ei soojene enne, kui küpsetama hakkad.
+     * Eraldi väljana, mitte probe.timerStartedAt pealt: sihi muutmine keset
+     * küpsetust nullib stopperi, aga liha ei jahtu selle peale tagasi.
+     */
+    @Volatile
+    private var demoCookStartedAt: Long? = null
+
+    /**
      * Demo asendab ainult andmeallika. Kõik ülejäänu — alarm, salvestamine,
      * teavitus — käib täpselt sama koodi kaudu mis päris anduri puhul, muidu
      * ei testiks demo midagi.
@@ -447,17 +456,30 @@ class ThermometerService : android.app.Service() {
 
         teardownBle()
         demoBoostCelsius = 0.0
+        demoCookStartedAt = null
         ThermometerRepository.setDemoMode(true)
         ThermometerRepository.setConnection(ConnectionState.CONNECTED)
 
-        val startedAt = System.currentTimeMillis()
         demoJob = serviceScope.launch {
             while (isActive) {
-                val seconds = (System.currentTimeMillis() - startedAt) / 1000.0
-                // Newtoni jahtumisseadus tagurpidi: kiire tõus alguses, siis
-                // aeglustub — nagu päris lihal ahjus.
-                val natural = OVEN_C - (OVEN_C - AMBIENT_C) * exp(-seconds / DEMO_TAU_S)
-                val celsius = min(150.0, natural + demoBoostCelsius)
+                val now = System.currentTimeMillis()
+                val cooking = ThermometerRepository.state.value
+                    .probes[DEMO_PROBE_ADDRESS]?.isCooking == true
+                if (cooking) {
+                    if (demoCookStartedAt == null) demoCookStartedAt = now
+                } else if (demoCookStartedAt != null) {
+                    // "Lõpeta" — järgmine küpsetus algab jälle nullist.
+                    demoCookStartedAt = null
+                    demoBoostCelsius = 0.0
+                }
+
+                val base = demoCookStartedAt?.let { startedAt ->
+                    val seconds = (now - startedAt) / 1000.0
+                    // Newtoni jahtumisseadus tagurpidi: kiire tõus alguses, siis
+                    // aeglustub — nagu päris lihal ahjus.
+                    OVEN_C - (OVEN_C - AMBIENT_C) * exp(-seconds / DEMO_TAU_S)
+                } ?: AMBIENT_C
+                val celsius = min(150.0, base + demoBoostCelsius)
                 // Päris andur annab täiskraade, demo teeb sama.
                 processReading(
                     A5sProtocol.Reading(
@@ -476,6 +498,8 @@ class ThermometerService : android.app.Service() {
     private fun stopDemo() {
         demoJob?.cancel()
         demoJob = null
+        demoCookStartedAt = null
+        demoBoostCelsius = 0.0
         CookRecorder.endSession(DEMO_PROBE_ADDRESS)
         ThermometerRepository.setDemoMode(false)
         reloadBasesAndConnect()
