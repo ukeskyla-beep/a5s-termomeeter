@@ -197,6 +197,10 @@ class ThermometerService : android.app.Service() {
     /** Praegune foreground service'i tüüp; 0 = Bluetoothi luba puudub. */
     private var foregroundType = -1
     private var lastNotificationUpdate = 0L
+    private var lastNotificationContent: String? = null
+
+    @Volatile
+    private var notificationUpdateQueued = false
 
     @Volatile
     private var lastFrameAt = 0L
@@ -331,6 +335,13 @@ class ThermometerService : android.app.Service() {
                 knownProbeAddresses.addAll(probes.map { it.address })
                 ThermometerRepository.applyNames(probes.associate { it.address to it.name })
             }
+        }
+
+        // Püsiteavitus järgib olekut, mitte ainult mõõtmisi. Küpsetuse lõpp,
+        // sihi muutus ja ühenduse katkemine ei too ühtegi uut mõõtmist kaasa,
+        // aga teavituses peavad nad kõik näha olema.
+        serviceScope.launch {
+            ThermometerRepository.state.collect { maybeUpdateOngoingNotification() }
         }
 
         // Alarm vaikib alati, kui olek ütleb, et ta ei peaks enam helisema.
@@ -550,6 +561,9 @@ class ThermometerService : android.app.Service() {
     @SuppressLint("MissingPermission")
     private fun teardownBle() {
         handler.removeCallbacksAndMessages(null)
+        // Järjekorras olnud teavituse uuendus läks ülalpool kaotsi — ilma lippu
+        // maha võtmata ei jõuaks ükski järgmine muudatus enam teavitusse.
+        notificationUpdateQueued = false
         stopBaseScan()
         gatts.values.forEach { gatt ->
             runCatching { gatt.disconnect() }
@@ -1094,9 +1108,16 @@ class ThermometerService : android.app.Service() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun buildOngoingNotification(): Notification {
+    /**
+     * Püsiteavituse sisu. Teine väli on null, kui teisel real ei ole midagi
+     * öelda — siis jääb see rida hoopis ära.
+     */
+    private fun ongoingNotificationText(): Pair<String, String?> {
         val state = ThermometerRepository.state.value
-        val probes = state.probeList
+
+        // Demo sond kuulub teavitusse ainult küpsetuse ajal. Muidu seisaks ta
+        // seal alaliselt toatemperatuuriga ja lükkaks päris sondi näidu kõrvale.
+        val probes = state.probeList.filter { !it.isDemo || it.isCooking }
 
         val title = when {
             probes.isNotEmpty() -> probes.joinToString("  ·  ") {
@@ -1108,28 +1129,69 @@ class ThermometerService : android.app.Service() {
             else -> "A5S Termomeeter"
         }
 
+        // Ilma küpsetuseta jääb teine rida tühjaks. Varem seisis seal
+        // "Küpsetust ei käi" — rida teksti mitte millegi kohta.
         val cooking = probes.mapNotNull { probe ->
             probe.target?.let { "${it.meat}, ${it.doneness} → ${it.celsius} °C" }
         }
-        val text = if (cooking.isEmpty()) "Küpsetust ei käi" else cooking.joinToString(" · ")
+        return title to cooking.joinToString(" · ").ifEmpty { null }
+    }
 
-        return NotificationCompat.Builder(this, CHANNEL_ONGOING)
+    private fun buildOngoingNotification(): Notification {
+        val (title, text) = ongoingNotificationText()
+        return buildOngoingNotification(title, text)
+    }
+
+    private fun buildOngoingNotification(title: String, text: String?): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.drawable.ic_stat_thermometer)
             .setContentTitle(title)
-            .setContentText(text)
+            .apply { text?.let { setContentText(it) } }
             .setContentIntent(contentIntent())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .build()
+
+    private val notificationUpdater = Runnable {
+        notificationUpdateQueued = false
+        updateOngoingNotification()
     }
 
+    /**
+     * Tohib kutsuda tihti ja mitmest lõimest — päris töö käib põhilõimes ja
+     * ainult siis, kui teavituse tekst päriselt muutub.
+     */
     private fun maybeUpdateOngoingNotification() {
-        val now = System.currentTimeMillis()
-        if (now - lastNotificationUpdate < NOTIFICATION_THROTTLE_MS) return
-        lastNotificationUpdate = now
+        if (notificationUpdateQueued) return
+        notificationUpdateQueued = true
+        handler.post(notificationUpdater)
+    }
+
+    private fun updateOngoingNotification() {
         if (!canPostNotifications()) return
-        notificationManager.notify(NOTIFICATION_ID_ONGOING, buildOngoingNotification())
+
+        // Mõõtmisi tuleb ~165 ms tagant, aga tekst muutub alles kraadi
+        // vahetudes. Ilma selle väravata kirjutasime teavituse üle iga sekund
+        // ka täpselt sama sisuga.
+        val (title, text) = ongoingNotificationText()
+        val content = "$title\n$text"
+        if (content == lastNotificationContent) return
+
+        val now = System.currentTimeMillis()
+        val sinceLast = now - lastNotificationUpdate
+        if (sinceLast < NOTIFICATION_THROTTLE_MS) {
+            // Muudatust ei visata ära, vaid lükatakse edasi. Varem kadus nii
+            // viimane muutus — näiteks küpsetuse lõpp, mille järel mõõtmisi
+            // enam ei tule — ja teavitusse jäi vana näit rippuma.
+            notificationUpdateQueued = true
+            handler.postDelayed(notificationUpdater, NOTIFICATION_THROTTLE_MS - sinceLast)
+            return
+        }
+
+        lastNotificationUpdate = now
+        lastNotificationContent = content
+        notificationManager.notify(NOTIFICATION_ID_ONGOING, buildOngoingNotification(title, text))
     }
 
     /** Heli peatamise ja teavituse kustutamise teeb ülalpool olev jälgija. */
