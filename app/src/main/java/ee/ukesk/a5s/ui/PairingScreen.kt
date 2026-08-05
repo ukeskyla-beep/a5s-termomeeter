@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ee.ukesk.a5s.ble.DiscoveredBase
+import ee.ukesk.a5s.ble.blePermissionsGranted
 import ee.ukesk.a5s.ble.ThermometerRepository
 import ee.ukesk.a5s.ble.ThermometerService
 import ee.ukesk.a5s.data.db.AppDatabase
@@ -47,6 +48,9 @@ import kotlinx.coroutines.launch
 
 /** Neli nelja-sekundilist ringi ehk umbes 16 sekundit otsimist korraga. */
 private const val SEARCH_ROUNDS = 4
+
+/** Kui kaua anda kasutajale aega loadialoogidele vastata, enne kui alla anda. */
+private const val PERMISSION_WAIT_MS = 30_000L
 
 /**
  * Paaritamine. Telefon ühendub baasiga (puidust pesa) — sondid ilmuvad ise
@@ -70,14 +74,38 @@ fun PairingScreen(
 
     val candidatesEmpty = state.discoveredBases.none { it.address !in knownAddresses }
 
+    // Otsing käivitub ise ainult esimesel korral, kui kasutajal ei ole veel
+    // midagi. Menüüst avatuna ootab leht nupuvajutust: kui baas on olemas ja
+    // töötab, ei ole mõtet akut kulutada ega näidata "Baasi ei leitud", mis
+    // paistab veateatena olukorras, kus kõik on korras.
+    var searchRound by remember { mutableIntStateOf(if (isFirstRun) 1 else 0) }
+    var searching by remember { mutableStateOf(false) }
+    var permissionMissing by remember { mutableStateOf(false) }
+    val hasSearched = searchRound > 0
+
     // Otsime kindla aja, mitte lõputult: pidev skaneerimine sööb akut ja jätab
-    // ekraani igavesse "Otsin…" olekusse. Pärast seda ootab "Proovi uuesti".
-    var searchRound by remember { mutableIntStateOf(0) }
-    var searching by remember { mutableStateOf(true) }
+    // ekraani igavesse "Otsin…" olekusse.
     LaunchedEffect(searchRound) {
+        if (searchRound == 0) return@LaunchedEffect
         searching = true
-        // Kordame skaneerimist ringi sees, sest luba võidi anda alles pärast
-        // lehe avanemist ja skaneerimisaken võib vahepeal täis saada.
+        permissionMissing = false
+
+        // Esmakäivitusel vastab kasutaja loadialoogidele just siis, kui ringid
+        // muidu tühja jooksevad — ja lõpuks seisaks ekraanil "Baasi ei leitud",
+        // kuigi otsingut ei toimunudki.
+        var waited = 0L
+        while (!blePermissionsGranted(context) && waited < PERMISSION_WAIT_MS) {
+            kotlinx.coroutines.delay(300)
+            waited += 300
+        }
+        if (!blePermissionsGranted(context)) {
+            permissionMissing = true
+            searching = false
+            return@LaunchedEffect
+        }
+
+        // Kordame skaneerimist ringi sees, sest skaneerimisaken võib vahepeal
+        // täis saada.
         repeat(SEARCH_ROUNDS) {
             if (!ThermometerRepository.state.value.scanningForBases) {
                 ThermometerService.scanForBases(context)
@@ -109,44 +137,64 @@ fun PairingScreen(
 
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (isFirstRun) "Tere tulemast" else "Lisa baas",
+                text = if (isFirstRun) "Kas hakkame pihta?" else "Baasid",
                 style = MaterialTheme.typography.headlineMedium,
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Lülita A5S baas sisse ja hoia telefoni lähedal.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+
+            if (isFirstRun || knownBases.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Lülita A5S baas sisse ja hoia telefoni lähedal.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             Spacer(Modifier.height(20.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (searching) {
+            if (searching) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.padding(horizontal = 6.dp))
+                    Text(
+                        text = "Otsin…",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(
-                    text = if (searching) "Otsin…" else "Otsing peatatud",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            if (!searching && candidatesEmpty) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Baasi ei leitud.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
+            } else {
+                // "Baasi ei leitud" alles siis, kui päriselt otsisime. Muidu
+                // seisaks see igal Baasid-lehe avamisel ees nagu veateade.
+                if (permissionMissing) {
+                    Text(
+                        text = "Bluetoothi luba puudub — ilma selleta ei saa baasi otsida.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                } else if (hasSearched && candidatesEmpty) {
+                    Text(
+                        // Ühendatud baas ei reklaami end, seega otsing teda ei
+                        // näe. "Baasi ei leitud" seisaks siis vastuoluliselt
+                        // töötava baasi kohal.
+                        text = if (knownBases.isEmpty()) {
+                            "Baasi ei leitud."
+                        } else {
+                            "Uut baasi ei leitud."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = { searchRound++ }) { Text("Proovi uuesti") }
-                    if (isFirstRun) {
+                    Button(onClick = { searchRound++ }) {
+                        Text(if (hasSearched) "Otsi uuesti" else "Otsi")
+                    }
+                    if (isFirstRun && hasSearched) {
                         OutlinedButton(onClick = onDone) { Text("Jätka ilma baasita") }
                     }
                 }
@@ -193,7 +241,7 @@ fun PairingScreen(
             if (knownBases.isNotEmpty()) {
                 Spacer(Modifier.height(24.dp))
                 Text(
-                    text = "Juba lisatud",
+                    text = if (isFirstRun) "Juba lisatud" else "Sinu baasid",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -203,12 +251,17 @@ fun PairingScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val connected = base.address in state.connectedBases
                         Column {
                             Text(base.name, style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                text = base.address,
+                                text = if (connected) "ühendatud" else "pole ühenduses",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (connected) {
+                                    TargetReachedGreen
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                             )
                         }
                         // Ainult kustutamine: teenus jälgib registrit ise ja
@@ -223,9 +276,18 @@ fun PairingScreen(
         }
     }
 
+    // Vaikenimi peab olema vaba: nimi on ainus, mis kaht baasi nimekirjas
+    // eristab, ja kaks "Grilli" ei ütleks kummastki midagi.
+    val defaultBaseName = remember(knownBases) {
+        val taken = knownBases.map { it.name }.toSet()
+        generateSequence(1) { it + 1 }
+            .map { if (it == 1) "Grill" else "Grill $it" }
+            .first { it !in taken }
+    }
+
     naming?.let { base ->
         NameBaseDialog(
-            defaultName = "Grill",
+            defaultName = defaultBaseName,
             onDismiss = { naming = null },
             onSave = { name ->
                 naming = null
@@ -254,7 +316,9 @@ private fun NameBaseDialog(
     var name by remember { mutableStateOf(defaultName) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Anna baasile nimi") },
+        // Pealkiri räägib lisamisest, mitte nimest: "Loobu" luges varem nagu
+        // "jätan nime andmata", kuigi ta jätab lisamata.
+        title = { Text("Lisa baas") },
         text = {
             Column {
                 OutlinedTextField(
@@ -266,7 +330,8 @@ private fun NameBaseDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Sondidele saad nime anda eraldi, kui nad nähtavale ilmuvad.",
+                    text = "Nime võid jätta nii nagu on. Sondid saavad nime ise ja " +
+                        "neid saab hiljem ümber nimetada.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

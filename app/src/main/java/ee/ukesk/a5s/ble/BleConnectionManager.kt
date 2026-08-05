@@ -23,6 +23,25 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Kas BLE-lubade komplekt on käes.
+ *
+ * Vajab ka kasutajaliides: esmakäivitusel jookseks otsing muidu tühja seni,
+ * kuni kasutaja loadialoogidele vastab, ja lõpetaks eksitava teatega "baasi ei
+ * leitud", kuigi otsingut ei toimunudki.
+ */
+internal fun blePermissionsGranted(context: Context): Boolean {
+    fun granted(permission: String) =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        granted(Manifest.permission.BLUETOOTH_SCAN) &&
+            granted(Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        granted(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+}
+
+/**
  * Kogu BLE-pool ühes kohas: ühendused, otsing, taasühendamine ja valvekoer.
  *
  * Teenus ei tea siit midagi peale selle, et kaadrid tulevad [Listener.onFrame]
@@ -178,16 +197,7 @@ class BleConnectionManager(
         givenUp = false
     }
 
-    fun hasPermissions(): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            granted(Manifest.permission.BLUETOOTH_SCAN) &&
-                granted(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            granted(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
-    private fun granted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    fun hasPermissions(): Boolean = blePermissionsGranted(context)
 
     // -------------------------------------------------------------------- ühendus
 

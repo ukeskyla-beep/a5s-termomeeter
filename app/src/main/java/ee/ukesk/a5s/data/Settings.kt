@@ -25,6 +25,7 @@ object Settings {
     private const val FILE = "a5s_settings"
     private const val KEY_UNIT = "temp_unit"
     private const val KEY_ALARM_SOUND = "alarm_sound_uri"
+    private const val KEY_ONBOARDING_DONE = "onboarding_done"
 
     private lateinit var prefs: SharedPreferences
 
@@ -35,6 +36,16 @@ object Settings {
     private val _alarmSoundUri = MutableStateFlow<String?>(null)
     val alarmSoundUri: StateFlow<String?> = _alarmSoundUri.asStateFlow()
 
+    /**
+     * Kas kasutaja on avaekraani korra läbinud.
+     *
+     * Püsiv, mitte sessioonipõhine: tervitusekraan on mõeldud üks kord
+     * nägemiseks. Ilma selleta viskas äpp baasi eemaldanud või ainult demoga
+     * mängiva kasutaja iga käivitusel uuesti avaekraanile.
+     */
+    private val _onboardingDone = MutableStateFlow(false)
+    val onboardingDone: StateFlow<Boolean> = _onboardingDone.asStateFlow()
+
     fun init(context: Context) {
         if (::prefs.isInitialized) return
         prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -42,6 +53,13 @@ object Settings {
             TempUnit.valueOf(prefs.getString(KEY_UNIT, null) ?: TempUnit.CELSIUS.name)
         }.getOrDefault(TempUnit.CELSIUS)
         _alarmSoundUri.value = prefs.getString(KEY_ALARM_SOUND, null)
+        _onboardingDone.value = prefs.getBoolean(KEY_ONBOARDING_DONE, false)
+    }
+
+    fun markOnboardingDone() {
+        if (_onboardingDone.value) return
+        _onboardingDone.value = true
+        prefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
     }
 
     fun setUnit(unit: TempUnit) {

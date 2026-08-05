@@ -39,7 +39,8 @@ fun HelpScreen(onBack: () -> Unit) {
             Body(
                 "Lülita baas (puidust pesa) sisse. Äpp ühendub ise, eraldi nuppu ei ole. " +
                     "Sondid ilmuvad nimekirja kohe, kui baas neist rääkima hakkab — " +
-                    "võta sond laadijast välja ja oota hetk.",
+                    "võta sond laadijast välja ja oota hetk.\n\n" +
+                    "Uue baasi lisad menüüst: «Baasid» → «Otsi».",
             )
 
             Section("Laadimine")

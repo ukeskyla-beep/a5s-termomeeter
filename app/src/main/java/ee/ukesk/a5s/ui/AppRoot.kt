@@ -95,10 +95,7 @@ fun AppRoot(
     var screen by rememberSaveable(stateSaver = ScreenSaver) {
         mutableStateOf<Screen>(Screen.Home)
     }
-    // Baasita saab edasi minna — andurite nimekirjas ootab demo sond, millega
-    // saab kogu äppi läbi katsuda. Peab olema saveable, muidu viskaks äpp
-    // baasita kasutaja iga taasloomise järel uuesti tervitusekraanile.
-    var skippedPairing by rememberSaveable { mutableStateOf(false) }
+    val onboardingDone by Settings.onboardingDone.collectAsStateWithLifecycle()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     // Load ja ühendus kohe käivitumisel — eraldi "Ühenda" nuppu ei ole.
@@ -108,11 +105,21 @@ fun AppRoot(
     val knownBases = bases
     if (knownBases == null) return // andmebaas veel laeb
 
-    if (knownBases.isEmpty() && !skippedPairing) {
+    // Olemasolev kasutaja ei pea avaekraani nägema. Lipp on uus, tema baas
+    // mitte — kui registris on juba baas, on paaritamine ammu tehtud.
+    LaunchedEffect(knownBases.isEmpty()) {
+        if (knownBases.isNotEmpty()) Settings.markOnboardingDone()
+    }
+
+    // Avaekraan on mõeldud üks kord nägemiseks. Varem sõltus see baaside
+    // olemasolust, mistõttu baasi eemaldanud või ainult demoga mängiv kasutaja
+    // visati sinna iga käivitusel tagasi. Baasi puudumisest annab andurite
+    // nimekiri ise märku ja uue saab lisada menüüst.
+    if (!onboardingDone) {
         PairingScreen(
             isFirstRun = true,
             onDone = {
-                skippedPairing = true
+                Settings.markOnboardingDone()
                 screen = Screen.Home
             },
             onBack = null,
