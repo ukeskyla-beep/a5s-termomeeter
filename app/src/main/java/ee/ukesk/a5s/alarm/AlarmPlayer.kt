@@ -128,20 +128,16 @@ class AlarmPlayer(private val context: Context) {
     }
 
     private fun requestAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(audioAttributes)
-                .build()
-            focusRequest = request
-            audioManager.requestAudioFocus(request)
-        }
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(audioAttributes)
+            .build()
+        focusRequest = request
+        audioManager.requestAudioFocus(request)
     }
 
     private fun abandonAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-            focusRequest = null
-        }
+        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        focusRequest = null
     }
 
     /** Kas telefoni äratuse helitugevus on nii madal, et alarmi ei pruugi kuulda. */

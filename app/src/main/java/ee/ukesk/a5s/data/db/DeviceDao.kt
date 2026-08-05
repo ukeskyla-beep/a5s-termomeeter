@@ -37,14 +37,11 @@ interface DeviceDao {
     @Query("UPDATE known_probe SET name = :name WHERE address = :address")
     suspend fun renameProbe(address: String, name: String)
 
-    @Query("DELETE FROM known_probe WHERE address = :address")
-    suspend fun deleteProbe(address: String)
-
+    // NB: sondikirjeid ei kustutata kuskilt ega peakski. Baasi eemaldamisel
+    // jäävad nad alles, et sondi nimi ei kaoks, kui kasutaja baasi tagasi
+    // lisab; nimekirjast peidab nad ProbeListScreen.
     @Query("SELECT * FROM known_probe WHERE baseAddress = :baseAddress")
     suspend fun probesOfBase(baseAddress: String): List<KnownProbeEntity>
-
-    @Query("DELETE FROM known_probe WHERE baseAddress = :baseAddress")
-    suspend fun deleteProbesOfBase(baseAddress: String)
 
     // ------------------------------------------------------- omad temperatuurid
 
