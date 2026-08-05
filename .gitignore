@@ -8,7 +8,8 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# Allkirjastamisvõti ja selle paroolid — ei kuulu kunagi versioonihaldusesse.
+# Allkirjastamisvõti ja selle paroolid elavad väljaspool repot (vt README).
+# Need read on turvavõrk juhuks, kui keegi nad siia kogemata tagasi kopeerib.
 *.jks
 *.keystore
 keystore.properties

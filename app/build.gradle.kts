@@ -1,5 +1,6 @@
 // Otsene import on vajalik: Gradle KTS-is viitab `java` Java-pluginale,
 // mitte paketile java.util.
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -11,11 +12,20 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Allkirjastamisandmed loetakse versioonihaldusest välja jäetud failist.
-// Kui seda pole, ehitub release ilma allkirjata (nt CI-s või teisel masinal).
+// Allkirjastamisandmed elavad teadlikult väljaspool repot: võtme kaotamine
+// tähendab, et ühtegi uuendust ei saa enam kunagi välja anda, ja repo kaustas
+// oleks ta ühe kogemata `git add -f` või kausta kopeerimise kaugusel lekkimast.
+//
+// Asukoha annab ~/.gradle/gradle.properties (`a5sKeystoreDir=...`) või
+// keskkonnamuutuja A5S_KEYSTORE_DIR. Kummagita ehitub release ilma allkirjata,
+// nagu CI-s või teisel masinal.
+val keystorePropertiesFile: File? =
+    (providers.gradleProperty("a5sKeystoreDir").orNull ?: System.getenv("A5S_KEYSTORE_DIR"))
+        ?.let { File(it, "keystore.properties") }
+        ?.takeIf { it.exists() }
+
 val keystoreProperties = Properties().apply {
-    val file = rootProject.file("keystore.properties")
-    if (file.exists()) file.inputStream().use { load(it) }
+    keystorePropertiesFile?.inputStream()?.use { load(it) }
 }
 
 android {
@@ -31,9 +41,13 @@ android {
     }
 
     signingConfigs {
-        if (keystoreProperties.getProperty("storeFile") != null) {
+        val storeFileName = keystoreProperties.getProperty("storeFile")
+        if (storeFileName != null && keystorePropertiesFile != null) {
             create("release") {
-                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                // Suhteline tee käib võtmehoidla kausta, mitte repo, järgi.
+                storeFile = File(storeFileName)
+                    .takeIf { it.isAbsolute }
+                    ?: File(keystorePropertiesFile.parentFile, storeFileName)
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")

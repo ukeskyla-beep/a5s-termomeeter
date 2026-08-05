@@ -63,9 +63,18 @@ Nõuab JDK 17+ ja Android SDK-d. Windowsis tuleb JDK vajadusel ette anda:
 JAVA_HOME="C:/Program Files/Microsoft/jdk-21" ./gradlew installDebug
 ```
 
-Allkirjastatud väljalaske ehitamiseks on vaja projekti juurde faili
-`keystore.properties` (vt `keystore.properties.example`) ja vastavat võtmehoidlat.
-Kumbki ei kuulu versioonihaldusesse.
+Allkirjastatud väljalaske ehitamiseks on vaja võtmehoidlat ja faili
+`keystore.properties`. **Kumbki ei ela repo kaustas** — nende koht on
+väljaspool projekti, et võti ei saaks sinna ka kogemata sattuda. Asukoha annab
+`~/.gradle/gradle.properties`:
+
+```properties
+a5sKeystoreDir=C:/Users/<sina>/Keys/a5s
+```
+
+Seadistamise sammud on failis `keystore.properties.example`. Ilma võtmeta
+ehitub release ilma allkirjata (`app-release-unsigned.apk`) — CI ja teiste
+masinate jaoks normaalne, ainult paigaldada ei saa.
 
 Toolchain: AGP 9.3.1, Gradle 9.6.1, Kotlin 2.4.10, compileSdk 37, Room 2.8.4 + KSP.
 
