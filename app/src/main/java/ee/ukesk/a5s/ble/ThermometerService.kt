@@ -121,6 +121,12 @@ class ThermometerService : android.app.Service() {
          */
         private const val CONNECT_GIVE_UP_MS = 120_000L
 
+        /** Kui kaua proovime pimesi, enne kui võtame otsingu appi. */
+        private const val BLIND_RETRY_WINDOW_MS = 10_000L
+
+        /** STATE_ON tuleb enne, kui stack päriselt ühendusi vastu võtab. */
+        private const val BLUETOOTH_SETTLE_MS = 1_500L
+
         /** Demo simulatsiooni parameetrid: ~57 °C kahe minutiga. */
         private const val OVEN_C = 95.0
         private const val DEMO_TAU_S = 180.0
@@ -173,6 +179,12 @@ class ThermometerService : android.app.Service() {
      * otsing ei leia teda üles ja tema andmed käivad vale kliendi kaudu.
      */
     private val connecting = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Baasid, mille pime ühendus on läbi kukkunud ja mida tuleb enne järgmist
+     * katset otsinguga üles leida. Vt [baseScanCallback].
+     */
+    private val scanConnectWanted = ConcurrentHashMap.newKeySet<String>()
     private val knownProbeAddresses = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
@@ -279,7 +291,15 @@ class ThermometerService : android.app.Service() {
                     // teardownBle tühjendas väljalülitamisel handleri järjekorra.
                     handler.removeCallbacks(staleDataWatchdog)
                     handler.postDelayed(staleDataWatchdog, WATCHDOG_INTERVAL_MS)
-                    reloadBasesAndConnect()
+                    // Pärast taaskäivitust ei ole kontrolleril seadmekirjeid,
+                    // seega otsing kohe appi — pime katse siin ei õnnestu.
+                    // Väike viivitus annab stackil valmis saada.
+                    handler.postDelayed({
+                        if (!running) return@postDelayed
+                        scanConnectWanted += knownBaseAddresses
+                        startBaseScan()
+                        reloadBasesAndConnect()
+                    }, BLUETOOTH_SETTLE_MS)
                 }
                 BluetoothAdapter.STATE_OFF -> {
                     Log.i(TAG, "Bluetooth lülitati välja")
@@ -585,13 +605,25 @@ class ThermometerService : android.app.Service() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = result.device?.name ?: result.scanRecord?.deviceName ?: return
             if (name != A5sProtocol.ADVERTISED_NAME) return
+            val address = result.device.address
             ThermometerRepository.addDiscoveredBase(
                 DiscoveredBase(
-                    address = result.device.address,
+                    address = address,
                     advertisedName = name,
                     rssi = result.rssi,
                 ),
             )
+
+            // Pime ühendus salvestatud aadressile kukub pärast Bluetoothi
+            // taaskäivitust läbi, sest kontrolleril ei ole seadmest enam kirjet.
+            // Värskelt nähtud seadmega õnnestub ühendus kohe, seega katkestame
+            // pimeda katse ja alustame siit.
+            if (scanConnectWanted.remove(address)) {
+                Log.i(TAG, "Baas $address leiti otsinguga — ühendan")
+                connecting.remove(address)
+                gatts.remove(address)?.let { runCatching { it.close() } }
+                connectTo(address)
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -741,6 +773,10 @@ class ThermometerService : android.app.Service() {
         val characteristic = g.getService(A5sProtocol.SERVICE_UUID)
             ?.getCharacteristic(A5sProtocol.DATA_CHARACTERISTIC_UUID)
         if (characteristic == null) {
+            // Peaaegu alati aegunud teenusevahemälu, mitte vale seade. Otsing
+            // enne järgmist katset annab stackile värske kirje.
+            Log.w(TAG, "Teenust ei leitud (${g.device.address}) — otsin enne uut katset")
+            scanConnectWanted += g.device.address
             ThermometerRepository.setError("Seadmel ${g.device.address} puudub oodatud teenus")
             return false
         }
@@ -781,6 +817,7 @@ class ThermometerService : android.app.Service() {
     @SuppressLint("MissingPermission")
     private fun disconnectFrom(address: String) {
         connecting.remove(address)
+        scanConnectWanted.remove(address)
         gatts.remove(address)?.let {
             Log.i(TAG, "Katkestan ühenduse baasiga $address")
             runCatching { it.disconnect() }
@@ -818,8 +855,19 @@ class ThermometerService : android.app.Service() {
             failingFor < 60_000L -> 5_000L
             else -> 15_000L
         }
+        // Esimesed sekundid proovime pimesi — see katab tavalise "baas läks
+        // hetkeks levist välja" juhu ja on kiireim tee tagasi. Kui see ei aita,
+        // on tõenäoline põhjus kadunud seadmekirje, mida ravib ainult otsing.
+        val useScan = failingFor > BLIND_RETRY_WINDOW_MS
         handler.postDelayed(
-            { if (running && !connectionGivenUp) connectTo(address) },
+            {
+                if (!running || connectionGivenUp) return@postDelayed
+                if (useScan) {
+                    scanConnectWanted += address
+                    startBaseScan()
+                }
+                connectTo(address)
+            },
             delayMs,
         )
     }
@@ -876,6 +924,7 @@ class ThermometerService : android.app.Service() {
                 return
             }
 
+            scanConnectWanted.remove(address)
             ThermometerRepository.setBaseConnected(address, true)
             ThermometerRepository.setConnection(ConnectionState.CONNECTED)
             ThermometerRepository.setError(null)
