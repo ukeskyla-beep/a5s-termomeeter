@@ -89,6 +89,14 @@ plugin (`org.jetbrains.kotlin.plugin.compose`) on siiski endiselt vajalik.
 - **Mitu sondi korraga.** Kood on aadressipõhine ja UI näitab iga sondi eraldi,
   aga päriselt on seda testitud ainult ühe sondiga — teist ei olnud võtta.
 
+## Riistvara omapärad
+
+- **Baas ei pruugi kiirlaadijaga laadida.** USB-C PD laadijaga võib ta jääda
+  täiesti vaikseks — ei tulesid, ei laadimist — kuigi sama juhe laeb telefoni
+  probleemideta. Tavalise laadijaga algab laadimine liikuvate tuledega.
+- Baas on pime, kui sond on pesas ja juhet küljes ei ole. Sondi välja võttes
+  näitab ta sondi temperatuuri Fahrenheitides; ühikut seadmest muuta ei saa.
+
 ## Toiduohutus
 
 Sihttemperatuurid on failis

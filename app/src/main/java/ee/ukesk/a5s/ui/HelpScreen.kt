@@ -42,6 +42,14 @@ fun HelpScreen(onBack: () -> Unit) {
                     "võta sond laadijast välja ja oota hetk.",
             )
 
+            Section("Laadimine")
+            Body(
+                "Et sond, baas ja äpp omavahel töötaksid, peavad akud olema laetud. " +
+                    "Laadija ühendamisel peab laadimisindikaator baasil põlema " +
+                    "hakkama. Mõne kiirlaadijaga ta ei pruugi seda teha — kasuta " +
+                    "tavalist laadijat.",
+            )
+
             Section("Sondi nimi")
             Body(
                 "Ava sond nimekirjast ja vajuta selle nimele. Nimi jääb püsima ka pärast " +
