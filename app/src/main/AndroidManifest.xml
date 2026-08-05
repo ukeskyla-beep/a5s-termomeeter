@@ -27,6 +27,10 @@
          tüüpi teenust ei tohi siis käivitada, aga demo sond, alarm ja ajalugu
          peavad ka ilma Bluetoothita töötama. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- specialUse tüüpi ei ole enne Android 14 olemas. Android 10–13 vajab
+         loata olukorras seega dataSync'i — tüübita teenust ei luba juba
+         Android 10. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Ilma selleta võib Android pika küpsetuse ajal teenuse maha võtta.
          Play Store piirab seda luba, aga see äpp on isiklikuks kasutuseks. -->
@@ -44,8 +48,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.A5S">
 
+        <!-- Compose tuleb konfiguratsioonimuutustega ise toime, seega ei ole
+             Activity taasloomist vaja. Ilma selleta kaotas ekraani pööramine
+             navigatsiooni ja lähtestas demo sondi küpsetuse. -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|density|fontScale|uiMode|layoutDirection|locale"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@style/Theme.A5S">
@@ -58,7 +66,7 @@
         <service
             android:name=".ble.ThermometerService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|specialUse">
+            android:foregroundServiceType="connectedDevice|specialUse|dataSync">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Demo probe simulation and cook alarm when the user has

@@ -23,6 +23,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -43,6 +45,40 @@ private sealed interface Screen {
     data class CookDetail(val sessionId: Long) : Screen
 }
 
+/**
+ * Hoiab avatud vaate alles ka siis, kui Android protsessi taustal maha võtab.
+ * Manifesti `configChanges` katab pööramise; see katab protsessi surma.
+ */
+private val ScreenSaver = listSaver<Screen, Any>(
+    save = { screen ->
+        when (screen) {
+            Screen.Home -> listOf(KEY_HOME)
+            Screen.AddDevice -> listOf(KEY_ADD_DEVICE)
+            Screen.History -> listOf(KEY_HISTORY)
+            Screen.Help -> listOf(KEY_HELP)
+            is Screen.Probe -> listOf(KEY_PROBE, screen.address)
+            is Screen.CookDetail -> listOf(KEY_COOK_DETAIL, screen.sessionId)
+        }
+    },
+    restore = { saved ->
+        when (saved.firstOrNull()) {
+            KEY_ADD_DEVICE -> Screen.AddDevice
+            KEY_HISTORY -> Screen.History
+            KEY_HELP -> Screen.Help
+            KEY_PROBE -> (saved.getOrNull(1) as? String)?.let { Screen.Probe(it) }
+            KEY_COOK_DETAIL -> (saved.getOrNull(1) as? Long)?.let { Screen.CookDetail(it) }
+            else -> null
+        } ?: Screen.Home
+    },
+)
+
+private const val KEY_HOME = "home"
+private const val KEY_ADD_DEVICE = "add_device"
+private const val KEY_HISTORY = "history"
+private const val KEY_HELP = "help"
+private const val KEY_PROBE = "probe"
+private const val KEY_COOK_DETAIL = "cook_detail"
+
 @Composable
 fun AppRoot(
     onRequestPermissions: () -> Unit,
@@ -56,10 +92,13 @@ fun AppRoot(
     val bases by dao.observeBases().collectAsStateWithLifecycle(initialValue = null)
     val unit by Settings.unit.collectAsStateWithLifecycle()
 
-    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    var screen by rememberSaveable(stateSaver = ScreenSaver) {
+        mutableStateOf<Screen>(Screen.Home)
+    }
     // Baasita saab edasi minna — andurite nimekirjas ootab demo sond, millega
-    // saab kogu äppi läbi katsuda.
-    var skippedPairing by remember { mutableStateOf(false) }
+    // saab kogu äppi läbi katsuda. Peab olema saveable, muidu viskaks äpp
+    // baasita kasutaja iga taasloomise järel uuesti tervitusekraanile.
+    var skippedPairing by rememberSaveable { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     // Load ja ühendus kohe käivitumisel — eraldi "Ühenda" nuppu ei ole.

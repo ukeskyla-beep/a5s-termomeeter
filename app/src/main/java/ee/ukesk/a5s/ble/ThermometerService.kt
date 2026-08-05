@@ -17,8 +17,10 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -259,11 +261,47 @@ class ThermometerService : android.app.Service() {
         reconnectAll()
     }
 
+    /**
+     * Bluetoothi sisselülitamine peab ühenduse ise taastama. Ilma selleta jäi
+     * äpp pärast lennurežiimi või juhuslikku väljalülitamist seisma seniks,
+     * kuni kasutaja ta uuesti avas — küpsetuse ajal tähendanuks see saamata
+     * alarmi.
+     */
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_ON -> {
+                    Log.i(TAG, "Bluetooth lülitati sisse — ühendan uuesti")
+                    connectionLostSince = 0L
+                    connectionGivenUp = false
+                    connecting.clear()
+                    // teardownBle tühjendas väljalülitamisel handleri järjekorra.
+                    handler.removeCallbacks(staleDataWatchdog)
+                    handler.postDelayed(staleDataWatchdog, WATCHDOG_INTERVAL_MS)
+                    reloadBasesAndConnect()
+                }
+                BluetoothAdapter.STATE_OFF -> {
+                    Log.i(TAG, "Bluetooth lülitati välja")
+                    teardownBle()
+                    ThermometerRepository.setConnection(ConnectionState.BLUETOOTH_OFF)
+                    ThermometerRepository.setError("Bluetooth on välja lülitatud")
+                }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannels()
+        ContextCompat.registerReceiver(
+            this,
+            bluetoothStateReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         Settings.init(this)
         CookRecorder.init(this)
 
@@ -381,6 +419,7 @@ class ThermometerService : android.app.Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(bluetoothStateReceiver) }
         alarmPlayer.stop()
         teardownBle()
         serviceScope.cancel()
@@ -400,13 +439,15 @@ class ThermometerService : android.app.Service() {
     private fun ensureForeground(): Boolean {
         val wantedType = when {
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0
-            // Tüübita teenust Android 14+ enam ei luba, kui manifest tüübi
-            // deklareerib — seega specialUse, mis ühtegi luba ei nõua.
+            // Tüübita teenust ei luba juba Android 10, kui manifest tüübi
+            // deklareerib. specialUse on olemas alles Android 14-st, seega
+            // vahepealne vahemik saab dataSync'i — mõlemad on Bluetoothi
+            // loast sõltumatud.
             !hasBlePermissions() ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 } else {
-                    0
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 }
             else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         }
