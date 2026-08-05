@@ -266,7 +266,14 @@ class BleConnectionManager(
         // aeglasse taustarežiimi, kus mõõtmised tulevad harva või lakkavad hoopis —
         // ja kuna alarmi kontrollitakse iga mõõtmise peale, jääks alarm tulemata.
         // Taasühendumise eest hoolitseb scheduleReconnect, mitte stack.
-        val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        //
+        // runCatching, sest siia jõuab ka otsingu tagasikutse ja viivitatud
+        // taasühendamine, mis lubasid üle ei kontrolli. Loata connectGatt
+        // viskaks SecurityException'i ja tapaks protsessi.
+        val gatt = runCatching {
+            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }.onFailure { Log.w(TAG, "Ühendumine baasiga $address ebaõnnestus", it) }.getOrNull()
+
         if (gatt != null) gatts[address] = gatt else connecting.remove(address)
     }
 
@@ -389,6 +396,17 @@ class BleConnectionManager(
             stopScan()
         }
 
+        // Loata otsing viskab SecurityException'i. Kuna käsk tuleb kohale
+        // onStartCommand'i kaudu, tapaks see kogu protsessi — ja START_STICKY
+        // käivitaks teenuse kohe uuesti. Nii tekkis värskel paigaldusel
+        // krahhiring: paaritumisekraan alustas otsingut samal hetkel, kui
+        // loadialoog oli veel ees.
+        if (!hasPermissions()) {
+            Log.w(TAG, "Otsingut ei alusta — Bluetoothi luba puudub")
+            ThermometerRepository.setError("Bluetoothi luba puudub")
+            return
+        }
+
         val scanner = adapter?.bluetoothLeScanner ?: return
 
         scanning = true
@@ -402,7 +420,16 @@ class BleConnectionManager(
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        scanner.startScan(null, settings, scanCallback)
+        // Luba võidakse ära võtta ka kontrolli ja selle rea vahel.
+        val started = runCatching { scanner.startScan(null, settings, scanCallback) }
+            .onFailure { Log.w(TAG, "Otsingu käivitamine ebaõnnestus", it) }
+            .isSuccess
+        if (!started) {
+            scanning = false
+            ThermometerRepository.setScanningForBases(false)
+            ThermometerRepository.setError("Otsingut ei õnnestunud käivitada")
+            return
+        }
         handler.postDelayed({ stopScan() }, BASE_SCAN_TIMEOUT_MS)
     }
 
@@ -520,7 +547,13 @@ class BleConnectionManager(
      * @return kas tellimine üldse õnnestus.
      */
     @SuppressLint("MissingPermission")
-    private fun enableNotifications(g: BluetoothGatt): Boolean {
+    private fun enableNotifications(g: BluetoothGatt): Boolean =
+        runCatching { enableNotificationsOrThrow(g) }
+            .onFailure { Log.w(TAG, "Teavituste tellimine ebaõnnestus", it) }
+            .getOrDefault(false)
+
+    @SuppressLint("MissingPermission")
+    private fun enableNotificationsOrThrow(g: BluetoothGatt): Boolean {
         val characteristic = g.getService(A5sProtocol.SERVICE_UUID)
             ?.getCharacteristic(A5sProtocol.DATA_CHARACTERISTIC_UUID)
         if (characteristic == null) {
